@@ -1,0 +1,12 @@
+<resources>
+    <string name="subtitle_subtitle">Screen &amp; Quest Translator</string>
+    <string name="zone_subtitle">Subtitle (Zone 1)</string>
+    <string name="zone_quest">Quest / Log (Zone 2)</string>
+    <string name="zone_dialog">Dialogue / Item (Zone 3)</string>
+    <string name="mode_calibrate">Select Zones (Camera)</string>
+    <string name="mode_hud">OLED Reading HUD</string>
+    <string name="settings_title">Settings &amp; Engines</string>
+    <string name="waiting_subtitle">Waiting for subtitle... (Previewless CameraX - OLED Battery Saver Active)</string>
+    <string name="volume_key_hint">Tip: Use Physical Volume Up/Down keys to switch between Subtitle and Quest zones without looking.</string>
+</resources>
+

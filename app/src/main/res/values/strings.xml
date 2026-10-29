@@ -1,0 +1,12 @@
+<resources>
+    <string name="subtitle_subtitle">Screen &amp; Quest Translator</string>
+    <string name="zone_subtitle">Altyazı (Alan 1)</string>
+    <string name="zone_quest">Görev / Quest (Alan 2)</string>
+    <string name="zone_dialog">Diyalog / Eşya (Alan 3)</string>
+    <string name="mode_calibrate">Alan Seçimi (Kamera)</string>
+    <string name="mode_hud">OLED Okuma Modu</string>
+    <string name="settings_title">Ayarlar &amp; Motorlar</string>
+    <string name="waiting_subtitle">Altyazı bekleniyor... (Kamera önizlemesi kapalı - OLED Pil Tasarrufu Aktif)</string>
+    <string name="volume_key_hint">İpucu: Ses Açma/Kısma tuşlarıyla ekrana bakmadan Altyazı ve Görev alanları arasında geçiş yapabilirsiniz.</string>
+</resources>
+
