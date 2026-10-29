@@ -153,9 +153,6 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onBackToSetupHub = {
                                     viewModel.setScreenMode(ScreenMode.SCREEN_SETUP_HUB)
-                                },
-                                onStartGameNow = {
-                                    viewModel.setScreenMode(ScreenMode.GAME_TRACKING_HUD)
                                 }
                             )
                         }

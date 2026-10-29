@@ -267,6 +267,20 @@ data class ParsedDialogueLine(
     val dominantColor: DominantSubtitleColor = DominantSubtitleColor.WHITE
 )
 
+/**
+ * Represents a localized text block detected on the monitor screen in Blur Mode.
+ * Coordinates (`bounds`) are normalized (0.0f .. 1.0f) relative to the rectified monitor screen,
+ * and `estimatedLineHeightRatio` represents the height of a single line of text relative to screen height
+ * so the translated overlay text can match the original font size!
+ */
+data class LocalizedTranslatedBlock(
+    val id: String,
+    val rawText: String,
+    val translatedText: String,
+    val bounds: NormalizedRoiRect,
+    val estimatedLineHeightRatio: Float
+)
+
 data class SupportedLanguage(
     val code: String,
     val nameTr: String,

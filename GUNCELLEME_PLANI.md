@@ -16,11 +16,16 @@ Uygulama açıldığında modern bir **Giriş Ana Menüsü** karşılar ve **3 A
 
 Telefon monitör veya TV karşısına tam dik değil, açılı/çapraz konulmuş olabilir. Bu yüzden **Ekran Ayarı** menüsü şu 2 temel mantıkla çalışır:
 
+### Sıfır Engel & Otomatik Kayıt (Sadece Sol Üstte Ufak Şeffaf Geri Tuşu)
+* Hem **4 Bağımsız Köşe Seçimi** hem de **Alt Alan Seçimi** ekranlarında üstteki açıklama/sıfırlama barı ve alttaki büyük kaydet butonları **tamamen kaldırılmıştır** (ekranın en üst ve en alt noktalarını kapatmaması için).
+* Yapılan her köşe ve çerçeve hareketi **anında otomatik kaydedilir**.
+* Ekranda yalnızca **sol üst köşede ufak, yarı şeffaf bir `← Geri` butonu** yer alır.
+
 ### Aşama 1: Kameradan Ekran Seçimi (4 Bağımsız Köşe / Serbest Dörtgen)
 * İlk alt menü: **`1. Kameradan Ekran Seçimi (4 Bağımsız Köşe)`**
 * Tam ekran kamera açılır. Ekranda sabit bir dikdörtgen yerine, **her bir köşesi (`Sol-Üst`, `Sağ-Üst`, `Sağ-Alt`, `Sol-Alt`) birbirinden tamamen bağımsız hareket edebilen 4 noktalı bir poligon (Quad)** bulunur.
 * Kullanıcı bu 4 köşe noktasını monitörün/TV'nin gerçek 4 köşesine sürükleyip bırakır.
-* Sistem, bu 4 bağımsız köşeyi **Perspektif Düzeltme (`android.graphics.Matrix.setPolyToPoly` / Homography Warp)** ile tam karşıdan bakıyormuş gibi düzgün 16:9 / 16:10 dikdörtgen bir ekrana dönüştürür (**Orantılı Düzleştirilmiş Ekran**).
+* Sistem, bu 4 bağımsız köşeyi **Perspektif Düzeltme (`android.graphics.Matrix.setPolyToPoly` / Homography Warp)** ile tam karşıdan bakıyormuş gibi düzgün dikdörtgen bir ekrana dönüştürür (**Orantılı Düzleştirilmiş Ekran**).
 
 ### Aşama 2: Düzleştirilmiş Ekran Üzerinde Alt Alanların Seçimi
 Monitörün 4 köşesi seçilip ekrana orantılı şekilde yerleştirildikten sonra, diğer 3 alt menü **bu düzleştirilmiş monitör görüntüsü içinde** seçilir:
@@ -30,11 +35,13 @@ Monitörün 4 köşesi seçilip ekrana orantılı şekilde yerleştirildikten so
 
 ---
 
-## 3. Blur Modu (Ayrı Alan Seçimi Yok — Seçili Ekranın Tamamını Kullanır!)
-* **Blur Modu için ayrı bir çerçeve/ekran seçimi yapılmaz.**
-* Kullanıcı oyun takip ekranında **Blur Modu** sekmesine geçtiğinde:
-  1. **Aşama 1'de seçilen "Kameradan Ekran Seçimi" (4 bağımsız köşeyle belirlenen monitör çerçevesinin tamamı)** baz alınır.
-  2. Bu çerçeve içindeki görüntü bulanıklaştırılır (Frosted Blur) ve algılanan yazıların çevirisi doğrudan bu seçili ekran çerçevesinin üzerinde gösterilir.
+## 3. Blur Modu (Çoklu Bölgede, Yazının Olduğu Yerde ve Yazının Boyutunda Lokal Blur & Çeviri!)
+* **Blur Modu için ayrı bir çerçeve/ekran seçimi yapılmaz;** 1. adımda seçilen **Kameradan Ekran Seçimi (`ScreenQuad`)** alanı baz alınır.
+* Blur Modu seçildiğinde **monitörün tamamı bulanıklaştırılmaz ve tam ekran tek bir yazı yazılmaz!**
+* Bunun yerine **Google ML Kit `TextBlock.boundingBox`** ile seçili monitör ekranının neresinde yazı varsa (örneğin sağ üstte Görev, sol ortada İpucu, alt ortada Altyazı):
+  1. Her bir yazı bloğunun ekrandaki **tam koordinatları (`left, top, right, bottom`)** ve **satır yüksekliği (`lineHeightRatio`)** tespit edilir.
+  2. Sadece **o yazının bulunduğu kutu kadar lokal bir alan bulanıklaştırılır (Frosted Blur)**.
+  3. Çeviri metni, **orijinal yazının tam üzerine ve orijinal yazının puntosuyla (boyutuyla) orantılı** olarak yazılır. Ekranın farklı yerlerinde birden fazla yazı varsa hepsi kendi yerinde aynı anda çevrilir!
 
 ---
 

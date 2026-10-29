@@ -3,6 +3,7 @@ package com.gamessub.caption.ui
 import android.graphics.Bitmap
 import android.os.Build
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -59,6 +60,8 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -775,89 +778,98 @@ fun GameTrackingHudScreen(
 }
 
 /**
- * 4TH SCREEN OPTION: LIVE AR BLUR OVERLAY (USES THE ENTIRE SELECTED SCREEN QUAD!)
- * There is no separate selection box for Blur Mode: it uses the entire 4-corner frame selected in
- * "Kameradan Ekran Seçimi" (`state.screenQuad`), blurs that entire screen region, and displays
- * the translated text directly inside it.
+ * 4TH SCREEN OPTION: LOCALIZED MULTI-REGION BLUR OVERLAY (Google Lens / In-Place AR Style!)
+ *
+ * - Displays the selected monitor screen (`state.rectifiedScreenPreview` or live camera).
+ * - Does NOT blur the entire screen!
+ * - Instead, for EVERY text block detected across the screen (`state.localizedBlurBlocks` — whether at the top-right quest log,
+ *   center-left hint box, or bottom subtitle), it blurs ONLY the exact bounding box (`bounds`) of that text
+ *   and renders the translated text inside that box scaled to match the original text's height (`estimatedLineHeightRatio`)!
  */
 @Composable
 private fun LiveArBlurTranslationOverlay(
     state: MainUiState,
     previewView: PreviewView
 ) {
-    val q = state.screenQuad
     val theme = state.hudTheme
+    val rectifiedBmp = state.rectifiedScreenPreview
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val minX = q.minX()
-        val maxX = q.maxX()
-        val minY = q.minY()
-        val maxY = q.maxY()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        val screenW = maxWidth
+        val screenH = maxHeight
 
-        val boxLeft = maxWidth * minX
-        val boxTop = maxHeight * minY
-        val boxWidth = maxWidth * (maxX - minX).coerceAtLeast(0.15f)
-        val boxHeight = maxHeight * (maxY - minY).coerceAtLeast(0.15f)
-
-        // Live Camera Feed
-        AndroidView(
-            factory = { previewView },
-            modifier = Modifier.fillMaxSize()
-        )
-
-        // Frosted Blur Translation Layer covering the entire selected ScreenQuad frame
-        Box(
-            modifier = Modifier
-                .offset(x = boxLeft, y = boxTop)
-                .size(width = boxWidth, height = boxHeight)
-                .clip(RoundedCornerShape(16.dp))
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .then(
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            Modifier.blur(22.dp)
-                        } else {
-                            Modifier
-                        }
-                    )
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                theme.backgroundColor.copy(alpha = 0.84f),
-                                theme.cardSurfaceColor.copy(alpha = 0.88f)
-                            )
-                        )
-                    )
+        // Base Layer: Proportional Rectified Monitor Screen (or Live Camera Preview fallback)
+        if (rectifiedBmp != null && !rectifiedBmp.isRecycled) {
+            Image(
+                bitmap = rectifiedBmp.asImageBitmap(),
+                contentDescription = "Seçili Monitör Ekranı",
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize()
             )
+        } else {
+            AndroidView(
+                factory = { previewView },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // Localized Blur & Translation Boxes at the Exact Coordinates and Size of Each Detected Text Block!
+        state.localizedBlurBlocks.forEach { block ->
+            val b = block.bounds
+            val padX = 0.012f
+            val padY = 0.008f
+            val leftNorm = (b.left - padX).coerceIn(0f, 0.95f)
+            val topNorm = (b.top - padY).coerceIn(0f, 0.95f)
+            val widthNorm = (b.width + padX * 2f).coerceIn(0.05f, 1f - leftNorm)
+            val heightNorm = (b.height + padY * 2f).coerceIn(0.035f, 1f - topNorm)
+
+            val boxLeft = screenW * leftNorm
+            val boxTop = screenH * topNorm
+            val boxWidth = screenW * widthNorm
+            val boxHeight = screenH * heightNorm
+
+            // Scale font size dynamically to match the height of the original text on the monitor
+            val dynamicFontSp = (screenH.value * block.estimatedLineHeightRatio * 0.78f).coerceIn(11f, 30f)
 
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .border(
-                        width = 2.dp,
-                        color = RoiZoneType.LIVE_AR_BLUR.badgeColor.copy(alpha = 0.75f),
-                        shape = RoundedCornerShape(16.dp)
-                    )
-                    .padding(horizontal = 20.dp, vertical = 14.dp),
-                contentAlignment = Alignment.Center
+                    .offset(x = boxLeft, y = boxTop)
+                    .size(width = boxWidth, height = boxHeight)
+                    .clip(RoundedCornerShape(8.dp))
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (!state.activeSpeakerName.isNullOrBlank()) {
-                        Text(
-                            text = "${state.activeSpeakerName} (${state.activeTtsProfileStatus})",
-                            color = theme.speakerBadgeColor,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
+                // Localized Frosted Blur Patch covering ONLY this text's area
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                Modifier.blur(16.dp)
+                            } else {
+                                Modifier
+                            }
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
+                        .background(
+                            color = theme.backgroundColor.copy(alpha = 0.84f)
+                        )
+                )
+
+                // Translated Text rendered in-place at the exact size of the original text
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .border(
+                            width = 1.dp,
+                            color = theme.accentColor.copy(alpha = 0.45f),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
-                        text = state.translatedText,
+                        text = block.translatedText,
                         color = theme.primaryTextColor,
-                        fontSize = (state.fontSizeSp * 0.90f).sp,
-                        lineHeight = (state.fontSizeSp * 1.22f).sp,
+                        fontSize = dynamicFontSp.sp,
+                        lineHeight = (dynamicFontSp * 1.18f).sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center
                     )

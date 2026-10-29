@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.gamessub.caption.billing.ProAccessManager
 import com.gamessub.caption.model.DominantSubtitleColor
 import com.gamessub.caption.model.GamerHudTheme
+import com.gamessub.caption.model.LocalizedTranslatedBlock
 import com.gamessub.caption.model.NormalizedRoiRect
 import com.gamessub.caption.model.OcrScriptType
 import com.gamessub.caption.model.RoiZoneType
@@ -66,6 +67,8 @@ data class MainUiState(
     val detectedSubtitleColor: DominantSubtitleColor = DominantSubtitleColor.WHITE,
     val activeTtsProfileStatus: String = "Hazır",
     val assignedCharacterVoices: Map<String, String> = emptyMap(),
+    val localizedBlurBlocks: List<LocalizedTranslatedBlock> = emptyList(),
+    val rectifiedScreenPreview: Bitmap? = null,
 
     val currentScanIntervalMs: Long = 380L,
     val isIdlePowerSave: Boolean = false,
@@ -254,6 +257,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(assignedCharacterVoices = mapped) }
     }
 
+    // Cache of already-translated localized text blocks in Blur Mode to avoid re-translating unchanged blocks
+    private val blurTranslationCache = mutableMapOf<String, String>()
+
     fun onCameraFrameAvailable(fullFrameBitmap: Bitmap) {
         val state = _uiState.value
 
@@ -282,32 +288,100 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val activeZone = state.activeZone
         val quad = state.screenQuad
-        // For Blur Mode, use the ENTIRE selected ScreenQuad (0..1); for other zones, use their sub-box inside the quad
-        val roiRect = if (activeZone.isLiveArBlurMode) {
-            NormalizedRoiRect(0.0f, 0.0f, 1.0f, 1.0f)
-        } else {
-            state.roiMap[activeZone] ?: NormalizedRoiRect.defaultFor(activeZone)
-        }
 
         viewModelScope.launch(Dispatchers.Default) {
             try {
-                val processed = RoiImageProcessor.cropAndProcess(
-                    fullFrame = fullFrameBitmap,
-                    screenQuad = quad,
-                    roiInsideScreen = roiRect,
-                    applyHighContrastFilter = state.highContrastFilterEnabled
-                )
-                fullFrameBitmap.recycle()
+                if (activeZone.isLiveArBlurMode) {
+                    // BLUR MODE: Warp the selected 4-corner monitor screen (`ScreenQuad`), detect ALL
+                    // localized text blocks (`boundingBox` + `lineHeightRatio`), blur ONLY each text block's
+                    // position, and render the translation in-place at the original text's size!
+                    val rectifiedScreen = RoiImageProcessor.warpScreenQuadToFlatBitmap(
+                        fullFrame = fullFrameBitmap,
+                        screenQuad = quad,
+                        targetWidth = 960,
+                        targetHeight = 540
+                    )
+                    fullFrameBitmap.recycle()
 
-                val rawOcr = ocrEngine.recognizeText(processed.croppedBitmap, state.ocrScript)
-                processed.croppedBitmap.recycle()
+                    val detectedBlocks = ocrEngine.recognizeLocalizedBlocks(
+                        bitmap = rectifiedScreen,
+                        script = state.ocrScript
+                    )
 
-                handleRecognizedText(
-                    rawOcrText = rawOcr,
-                    dominantColor = processed.dominantTextColor,
-                    zone = activeZone,
-                    nowMs = now
-                )
+                    val translatedBlocks = detectedBlocks.mapIndexed { idx, blk ->
+                        val normKey = TextStabilityFilter.normalizeForComparison(blk.text)
+                        val cached = blurTranslationCache[normKey]
+                        val trText = if (cached != null) {
+                            cached
+                        } else {
+                            val res = translationManager.translate(
+                                text = blk.text,
+                                sourceLangCode = state.sourceLanguageCode,
+                                targetLangCode = state.targetLanguageCode,
+                                engine = state.translationEngine,
+                                deepLApiKey = state.deepLApiKey,
+                                geminiApiKey = state.geminiApiKey
+                            ).getOrDefault(blk.text)
+                            if (blurTranslationCache.size > 60) blurTranslationCache.clear()
+                            blurTranslationCache[normKey] = res
+                            res
+                        }
+
+                        LocalizedTranslatedBlock(
+                            id = "${idx}_${normKey.take(12)}",
+                            rawText = blk.text,
+                            translatedText = trText,
+                            bounds = blk.normalizedBounds,
+                            estimatedLineHeightRatio = blk.lineHeightRatio
+                        )
+                    }
+
+                    // Also speak the bottom-most (subtitle) block via TTS if changed
+                    val primarySubtitleBlock = translatedBlocks.maxByOrNull { it.bounds.bottom }
+                    if (primarySubtitleBlock != null) {
+                        val prevRaw = lastStableOcrByZone[RoiZoneType.LIVE_AR_BLUR].orEmpty()
+                        if (!TextStabilityFilter.isDuplicateOrFlicker(prevRaw, primarySubtitleBlock.rawText, 0.85f)) {
+                            lastStableOcrByZone[RoiZoneType.LIVE_AR_BLUR] = primarySubtitleBlock.rawText
+                            val parsed = SpeakerParser.parse(primarySubtitleBlock.rawText, DominantSubtitleColor.WHITE)
+                                .copy(cleanSpokenText = primarySubtitleBlock.translatedText)
+                            ttsManager.speakDialogue(
+                                parsedLine = parsed,
+                                voiceMode = state.ttsVoiceMode,
+                                enabled = state.ttsEnabled,
+                                userBaseSpeed = state.ttsBaseSpeed,
+                                autoCatchUpEnabled = state.autoCatchUpTts
+                            )
+                            syncCharacterVoiceMap()
+                        }
+                    }
+
+                    _uiState.update { prev ->
+                        prev.copy(
+                            rectifiedScreenPreview = rectifiedScreen,
+                            localizedBlurBlocks = translatedBlocks,
+                            lastTextDetectedTimestampMs = if (translatedBlocks.isNotEmpty()) now else prev.lastTextDetectedTimestampMs
+                        )
+                    }
+                } else {
+                    val roiRect = state.roiMap[activeZone] ?: NormalizedRoiRect.defaultFor(activeZone)
+                    val processed = RoiImageProcessor.cropAndProcess(
+                        fullFrame = fullFrameBitmap,
+                        screenQuad = quad,
+                        roiInsideScreen = roiRect,
+                        applyHighContrastFilter = state.highContrastFilterEnabled
+                    )
+                    fullFrameBitmap.recycle()
+
+                    val rawOcr = ocrEngine.recognizeText(processed.croppedBitmap, state.ocrScript)
+                    processed.croppedBitmap.recycle()
+
+                    handleRecognizedText(
+                        rawOcrText = rawOcr,
+                        dominantColor = processed.dominantTextColor,
+                        zone = activeZone,
+                        nowMs = now
+                    )
+                }
             } catch (_: Exception) {
                 fullFrameBitmap.recycle()
             } finally {
@@ -443,6 +517,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         syncCharacterVoiceMap()
 
+        val sampleBlurBlocks = listOf(
+            LocalizedTranslatedBlock(
+                id = "sim_quest",
+                rawText = "MAIN QUEST: Find the ancient sunstone (0/1)",
+                translatedText = "ANA GÖREV: Kadim güneş taşını bul (0/1)",
+                bounds = NormalizedRoiRect(0.62f, 0.10f, 0.96f, 0.22f),
+                estimatedLineHeightRatio = 0.036f
+            ),
+            LocalizedTranslatedBlock(
+                id = "sim_hint",
+                rawText = "[Press E] Inspect Sunken Altar",
+                translatedText = "[E Tuşu] Batık Sunağı İncele",
+                bounds = NormalizedRoiRect(0.06f, 0.42f, 0.36f, 0.50f),
+                estimatedLineHeightRatio = 0.034f
+            ),
+            LocalizedTranslatedBlock(
+                id = "sim_sub",
+                rawText = chosen.first,
+                translatedText = chosen.second,
+                bounds = NormalizedRoiRect(0.14f, 0.76f, 0.86f, 0.89f),
+                estimatedLineHeightRatio = 0.044f
+            )
+        )
+
         _uiState.update {
             it.copy(
                 rawDetectedText = chosen.first,
@@ -450,6 +548,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 activeSpeakerName = parsed.speakerName,
                 detectedSubtitleColor = chosen.third,
                 activeTtsProfileStatus = ttsStatus,
+                localizedBlurBlocks = sampleBlurBlocks,
                 isScreenDimmed = false,
                 isQuestSingleShotSleeping = (state.activeZone == RoiZoneType.QUEST)
             )

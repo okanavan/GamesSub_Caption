@@ -14,21 +14,19 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -40,6 +38,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size as ComposeSize
 import androidx.compose.ui.graphics.Color
@@ -188,9 +187,9 @@ private fun ImageProxy.toRotatedBitmap(): Bitmap? {
 /**
  * STAGE 1: 4-Independent-Corner Monitor Screen Calibration ("Kameradan Ekran Seçimi")
  *
- * Each of the 4 corners (Top-Left, Top-Right, Bottom-Right, Bottom-Left) moves completely
- * independently so the user can trace the exact 4 corners of their TV/Monitor from any angle.
- * Also defines the full frame used by Blur Mode!
+ * ZERO top/bottom obstructing bars!
+ * Every drag movement auto-saves immediately (`onUpdateQuad`).
+ * Only a small, semi-transparent Back button sits in the top-left corner (`onSaveAndBackToHub`).
  */
 @Composable
 fun ScreenQuadCameraCalibrationScreen(
@@ -224,7 +223,7 @@ fun ScreenQuadCameraCalibrationScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Free 4-Corner Polygon Canvas
+        // Fullscreen Unobstructed 4-Corner Polygon Canvas
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
@@ -242,7 +241,7 @@ fun ScreenQuadCameraCalibrationScreen(
                             val dBL = hypot(tx - q.bottomLeft.x, ty - q.bottomLeft.y)
                             val minD = minOf(dTL, dTR, dBR, dBL)
 
-                            activeCorner = if (minD < 0.12f) {
+                            activeCorner = if (minD < 0.14f) {
                                 when (minD) {
                                     dTL -> QuadCornerHandle.TOP_LEFT
                                     dTR -> QuadCornerHandle.TOP_RIGHT
@@ -283,6 +282,7 @@ fun ScreenQuadCameraCalibrationScreen(
                                 )
                                 QuadCornerHandle.NONE -> q
                             }
+                            // Auto-saves immediately on every movement
                             onUpdateQuad(updated)
                         }
                     )
@@ -308,83 +308,35 @@ fun ScreenQuadCameraCalibrationScreen(
                 addRect(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height))
             }
             val outsideMask = Path.combine(PathOperation.Difference, fullPath, quadPath)
-            drawPath(outsideMask, color = Color.Black.copy(alpha = 0.58f))
+            drawPath(outsideMask, color = Color.Black.copy(alpha = 0.55f))
 
-            // Polygon interior fill & stroke
             drawPath(quadPath, color = Color(0xFF38BDF8).copy(alpha = 0.14f))
             drawPath(quadPath, color = Color(0xFF38BDF8), style = Stroke(width = 6f))
 
-            // Draw 4 Independent Corner Handles (Outer ring + inner dot)
             listOf(tl, tr, br, bl).forEach { pt ->
                 drawCircle(color = Color.White, radius = 24f, center = pt)
                 drawCircle(color = Color(0xFF0284C7), radius = 15f, center = pt)
             }
         }
 
-        // Top Instruction Bar
-        Row(
+        // ONLY a small, semi-transparent Top-Left Back Button (Auto-saves and returns)
+        SmallTransparentBackButton(
+            label = "← Geri",
+            accentColor = Color(0xFF38BDF8),
+            onClick = onSaveAndBackToHub,
             modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.TopCenter)
-                .background(Color.Black.copy(alpha = 0.76f))
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "1. Kameradan Ekran Seçimi (4 Bağımsız Köşe)",
-                    color = Color(0xFF38BDF8),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
-                Text(
-                    text = "4 köşenin her birini bağımsız sürükleyerek monitörün/TV'nin tam 4 köşesine oturtun. Blur modu tüm bu çerçeveyi kullanır.",
-                    color = Color(0xFFCFD8DC),
-                    fontSize = 12.sp
-                )
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            OutlinedButton(onClick = { onUpdateQuad(ScreenQuad()) }) {
-                Text("Sıfırla", color = Color.White, fontSize = 12.sp)
-            }
-        }
-
-        // Bottom Confirmation Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .background(Color.Black.copy(alpha = 0.82f))
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Button(
-                onClick = onSaveAndBackToHub,
-                modifier = Modifier.fillMaxWidth().height(50.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF00E676),
-                    contentColor = Color.Black
-                )
-            ) {
-                Text(
-                    text = "Ekran Köşelerini Kaydet & Alt Alanları Seçmeye Geç ✓",
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 14.sp
-                )
-            }
-        }
+                .align(Alignment.TopStart)
+                .padding(10.dp)
+        )
     }
 }
 
 /**
  * STAGE 2: Sub-Zone Selection INSIDE the Proportional / Perspective-Rectified Monitor Screen!
  *
- * After the user selects the 4 corners of the monitor (`ScreenQuad`), the camera feed is
- * perspective-warped (`RoiImageProcessor.warpScreenQuadToFlatBitmap`) so the monitor fills the
- * calibration view proportionally. The user then adjusts the Subtitle, Quest, or Dialogue box
- * (from all 4 corners and 4 edges) directly on this flattened screen!
+ * ZERO top/bottom obstructing bars!
+ * Every resize/move drag auto-saves immediately (`onUpdateRect`).
+ * Only a small, semi-transparent Back button sits in the top-left corner (`onBackToSetupHub`).
  */
 @Composable
 fun SingleZoneCameraCalibrationScreen(
@@ -392,12 +344,10 @@ fun SingleZoneCameraCalibrationScreen(
     screenQuad: ScreenQuad,
     rect: NormalizedRoiRect,
     onUpdateRect: (NormalizedRoiRect) -> Unit,
-    onBackToSetupHub: () -> Unit,
-    onStartGameNow: () -> Unit
+    onBackToSetupHub: () -> Unit
 ) {
     var rectifiedBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    // Capture live camera frames and perspective-warp the 4-corner ScreenQuad into a proportional flat image
     CameraXControllerEffect(
         showPreview = false,
         enableFrameAnalysis = true,
@@ -417,7 +367,6 @@ fun SingleZoneCameraCalibrationScreen(
     var activeDragHandle by remember { mutableStateOf(DragHandleMode.NONE) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B1120))) {
-        // Proportional Flattened Monitor Screen Feed
         val currentBmp = rectifiedBitmap
         if (currentBmp != null && !currentBmp.isRecycled) {
             Image(
@@ -426,20 +375,9 @@ fun SingleZoneCameraCalibrationScreen(
                 contentScale = ContentScale.FillBounds,
                 modifier = Modifier.fillMaxSize()
             )
-        } else {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Seçilen 4 köşe çerçevesi ekrana orantılı şekilde yerleştiriliyor...",
-                    color = Color.White.copy(alpha = 0.6f),
-                    fontSize = 13.sp
-                )
-            }
         }
 
-        // 8-Way Interactive Frame Canvas over the Proportional Rectified Screen
+        // Fullscreen Unobstructed 8-Way Frame Canvas
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
@@ -450,7 +388,7 @@ fun SingleZoneCameraCalibrationScreen(
                             val r = latestRect
                             val tx = (startOffset.x / canvasWidthPx).coerceIn(0f, 1f)
                             val ty = (startOffset.y / canvasHeightPx).coerceIn(0f, 1f)
-                            val hitTol = 0.065f
+                            val hitTol = 0.07f
 
                             val nearLeft = abs(tx - r.left) < hitTol
                             val nearRight = abs(tx - r.right) < hitTol
@@ -518,6 +456,7 @@ fun SingleZoneCameraCalibrationScreen(
                                 }
                             }.clamp()
 
+                            // Auto-saves immediately on every movement
                             onUpdateRect(updated)
                         }
                     )
@@ -587,64 +526,46 @@ fun SingleZoneCameraCalibrationScreen(
             )
         }
 
-        // Top Bar
-        Row(
+        // ONLY a small, semi-transparent Top-Left Back Button (Auto-saves and returns)
+        SmallTransparentBackButton(
+            label = "← Geri",
+            accentColor = zone.badgeColor,
+            onClick = onBackToSetupHub,
             modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.TopCenter)
-                .background(Color.Black.copy(alpha = 0.74f))
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "${zone.titleTr} (Seçilen Ekran Üzerinde Orantılı)",
-                    color = zone.badgeColor,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
-                Text(
-                    text = "4 bağımsız köşeyle seçtiğiniz monitör ekrana tam oturtuldu. Şimdi bu ekran içinde alanı köşe ve yanlarından ayarlayın.",
-                    color = Color(0xFFCFD8DC),
-                    fontSize = 11.sp
-                )
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            OutlinedButton(
-                onClick = { onUpdateRect(NormalizedRoiRect.defaultFor(zone)) }
-            ) {
-                Text("Sıfırla", color = Color.White, fontSize = 12.sp)
-            }
-        }
+                .align(Alignment.TopStart)
+                .padding(10.dp)
+        )
+    }
+}
 
-        // Bottom Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .background(Color.Black.copy(alpha = 0.78f))
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            OutlinedButton(
-                onClick = onBackToSetupHub,
-                modifier = Modifier.weight(1f).height(48.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("← Ekran Ayarı Menüsüne Dön", color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-            Button(
-                onClick = onStartGameNow,
-                modifier = Modifier.weight(1f).height(48.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = zone.badgeColor,
-                    contentColor = Color.Black
-                )
-            ) {
-                Text("Kaydet & Oyuna Başla ▶", fontWeight = FontWeight.ExtraBold)
-            }
-        }
+@Composable
+private fun SmallTransparentBackButton(
+    label: String,
+    accentColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = 0.42f))
+            .border(1.dp, accentColor.copy(alpha = 0.55f), RoundedCornerShape(50))
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = label,
+            tint = Color.White.copy(alpha = 0.90f),
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = "Geri",
+            color = Color.White.copy(alpha = 0.90f),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
