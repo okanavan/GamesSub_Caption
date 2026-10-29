@@ -4,10 +4,13 @@ import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.util.Size
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
@@ -16,6 +19,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -62,6 +67,7 @@ import com.gamessub.caption.model.RoiZoneType
 import com.gamessub.caption.model.ScreenQuad
 import com.gamessub.caption.ocr.RoiImageProcessor
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -87,11 +93,21 @@ private enum class QuadCornerHandle {
     MOVE_ALL
 }
 
+/**
+ * Full HD (1920x1080) CameraX Controller with:
+ * - High-Resolution `1920x1080` ImageAnalysis capture so small game subtitles stay razor-sharp.
+ * - Automatic Center-of-Monitor Auto-Focus & Anti-Glare Metering (`FocusMeteringAction`).
+ * - Optical/Digital Zoom Ratio (`cameraZoomRatio`) and Anti-Blowout Exposure Compensation (`exposureCompensation`).
+ */
 @Composable
 fun CameraXControllerEffect(
     showPreview: Boolean,
     enableFrameAnalysis: Boolean,
     previewView: PreviewView?,
+    cameraZoomRatio: Float = 1.0f,
+    exposureCompensation: Int = -2,
+    focusCenterNormX: Float = 0.5f,
+    focusCenterNormY: Float = 0.5f,
     onFrameBitmap: (Bitmap) -> Unit
 ) {
     val context = LocalContext.current
@@ -99,6 +115,7 @@ fun CameraXControllerEffect(
     val currentOnFrame by rememberUpdatedState(onFrameBitmap)
     val currentAnalyzeFlag by rememberUpdatedState(enableFrameAnalysis)
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -119,7 +136,8 @@ fun CameraXControllerEffect(
 
             @Suppress("DEPRECATION")
             val imageAnalysis = ImageAnalysis.Builder()
-                .setTargetResolution(Size(1280, 720))
+                // Upgraded from 1280x720 to Full HD 1920x1080 for crisp text readability!
+                .setTargetResolution(Size(1920, 1080))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
 
@@ -136,10 +154,14 @@ fun CameraXControllerEffect(
             }
 
             try {
-                if (showPreview && previewView != null) {
-                    val preview = Preview.Builder().build().also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
-                    }
+                val camera = if (showPreview && previewView != null) {
+                    @Suppress("DEPRECATION")
+                    val preview = Preview.Builder()
+                        .setTargetResolution(Size(1920, 1080))
+                        .build()
+                        .also {
+                            it.setSurfaceProvider(previewView.surfaceProvider)
+                        }
                     cameraProvider.bindToLifecycle(
                         lifecycleOwner,
                         CameraSelector.DEFAULT_BACK_CAMERA,
@@ -153,9 +175,72 @@ fun CameraXControllerEffect(
                         imageAnalysis
                     )
                 }
+                boundCamera = camera
+                applyCameraFocusZoomAndExposure(
+                    camera = camera,
+                    zoomRatio = cameraZoomRatio,
+                    exposureCompensation = exposureCompensation,
+                    normX = focusCenterNormX,
+                    normY = focusCenterNormY
+                )
             } catch (_: Exception) {
             }
         }, ContextCompat.getMainExecutor(context))
+    }
+
+    // Dynamically update Zoom, Exposure & Auto-Focus whenever user adjusts zoom or monitor quad center
+    LaunchedEffect(boundCamera, cameraZoomRatio, exposureCompensation, focusCenterNormX, focusCenterNormY) {
+        boundCamera?.let { cam ->
+            applyCameraFocusZoomAndExposure(
+                camera = cam,
+                zoomRatio = cameraZoomRatio,
+                exposureCompensation = exposureCompensation,
+                normX = focusCenterNormX,
+                normY = focusCenterNormY
+            )
+        }
+    }
+}
+
+private fun applyCameraFocusZoomAndExposure(
+    camera: Camera,
+    zoomRatio: Float,
+    exposureCompensation: Int,
+    normX: Float,
+    normY: Float
+) {
+    try {
+        val control = camera.cameraControl
+        val info = camera.cameraInfo
+
+        // 1. Apply Optical/Digital Zoom within hardware limits
+        val zoomState = info.zoomState.value
+        val minZ = zoomState?.minZoomRatio ?: 1.0f
+        val maxZ = zoomState?.maxZoomRatio ?: 4.0f
+        control.setZoomRatio(zoomRatio.coerceIn(minZ, maxZ))
+
+        // 2. Apply Anti-Glare Exposure Compensation so bright white TV text doesn't bloom in dark rooms
+        val expState = info.exposureState
+        if (expState.isExposureCompensationSupported) {
+            val range = expState.exposureCompensationRange
+            val clampedExp = exposureCompensation.coerceIn(range.lower, range.upper)
+            control.setExposureCompensationIndex(clampedExp)
+        }
+
+        // 3. Auto-Focus & Spot-Meter directly on the selected monitor center
+        val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+        val centerPoint = factory.createPoint(
+            normX.coerceIn(0.1f, 0.9f),
+            normY.coerceIn(0.1f, 0.9f)
+        )
+        val action = FocusMeteringAction.Builder(
+            centerPoint,
+            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
+        )
+            .setAutoCancelDuration(4, TimeUnit.SECONDS)
+            .build()
+        control.startFocusAndMetering(action)
+    } catch (_: Exception) {
     }
 }
 
@@ -188,14 +273,17 @@ private fun ImageProxy.toRotatedBitmap(): Bitmap? {
 /**
  * STAGE 1: 4-Independent-Corner Monitor Screen Calibration ("Kameradan Ekran Seçimi")
  *
- * ZERO top/bottom obstructing bars!
- * Every drag movement auto-saves immediately (`onUpdateQuad`).
- * Only a small, semi-transparent Back button sits in the top-left corner (`onSaveAndBackToHub`).
+ * - Full HD 1080p Camera Preview + Automatic Focus & Anti-Glare on Monitor Center.
+ * - Double-tap anywhere on the screen to force instant laser re-focus on that spot!
+ * - Tiny, semi-transparent Top-Left `← Geri` button + Tiny Top-Right `1.0x / 1.5x / 2.0x` Zoom pill.
  */
 @Composable
 fun ScreenQuadCameraCalibrationScreen(
     screenQuad: ScreenQuad,
+    cameraZoomRatio: Float,
+    exposureCompensation: Int,
     onUpdateQuad: (ScreenQuad) -> Unit,
+    onCycleZoom: () -> Unit,
     onSaveAndBackToHub: () -> Unit,
     onFrameBitmap: (Bitmap) -> Unit
 ) {
@@ -206,10 +294,17 @@ fun ScreenQuadCameraCalibrationScreen(
         }
     }
 
+    var focusPointX by remember { mutableStateOf(screenQuad.centerX()) }
+    var focusPointY by remember { mutableStateOf(screenQuad.centerY()) }
+
     CameraXControllerEffect(
         showPreview = true,
         enableFrameAnalysis = false,
         previewView = previewView,
+        cameraZoomRatio = cameraZoomRatio,
+        exposureCompensation = exposureCompensation,
+        focusCenterNormX = focusPointX,
+        focusCenterNormY = focusPointY,
         onFrameBitmap = onFrameBitmap
     )
 
@@ -228,6 +323,17 @@ fun ScreenQuadCameraCalibrationScreen(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = { tapOffset ->
+                            // Double-tap anywhere to trigger instant AF/AE focus on that monitor spot!
+                            if (canvasWidthPx > 1f && canvasHeightPx > 1f) {
+                                focusPointX = (tapOffset.x / canvasWidthPx).coerceIn(0.05f, 0.95f)
+                                focusPointY = (tapOffset.y / canvasHeightPx).coerceIn(0.05f, 0.95f)
+                            }
+                        }
+                    )
+                }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = { startOffset ->
@@ -253,7 +359,11 @@ fun ScreenQuadCameraCalibrationScreen(
                                 QuadCornerHandle.MOVE_ALL
                             }
                         },
-                        onDragEnd = { activeCorner = QuadCornerHandle.NONE },
+                        onDragEnd = {
+                            activeCorner = QuadCornerHandle.NONE
+                            focusPointX = latestQuad.centerX()
+                            focusPointY = latestQuad.centerY()
+                        },
                         onDragCancel = { activeCorner = QuadCornerHandle.NONE },
                         onDrag = { change, dragAmount ->
                             change.consume()
@@ -283,7 +393,6 @@ fun ScreenQuadCameraCalibrationScreen(
                                 )
                                 QuadCornerHandle.NONE -> q
                             }
-                            // Auto-saves immediately on every movement
                             onUpdateQuad(updated)
                         }
                     )
@@ -311,7 +420,7 @@ fun ScreenQuadCameraCalibrationScreen(
             val outsideMask = Path.combine(PathOperation.Difference, fullPath, quadPath)
             drawPath(outsideMask, color = Color.Black.copy(alpha = 0.55f))
 
-            drawPath(quadPath, color = Color(0xFF38BDF8).copy(alpha = 0.14f))
+            drawPath(quadPath, color = Color(0xFF38BDF8).copy(alpha = 0.12f))
             drawPath(quadPath, color = Color(0xFF38BDF8), style = Stroke(width = 6f))
 
             listOf(tl, tr, br, bl).forEach { pt ->
@@ -320,7 +429,7 @@ fun ScreenQuadCameraCalibrationScreen(
             }
         }
 
-        // ONLY a small, semi-transparent Top-Left Back Button (Auto-saves and returns)
+        // Small Semi-Transparent Top-Left Back Button (Auto-saves)
         SmallTransparentBackButton(
             label = "← Geri",
             accentColor = Color(0xFF38BDF8),
@@ -329,21 +438,46 @@ fun ScreenQuadCameraCalibrationScreen(
                 .align(Alignment.TopStart)
                 .padding(10.dp)
         )
+
+        // Small Semi-Transparent Top-Right Zoom & Auto-Focus Pill
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.Black.copy(alpha = 0.42f))
+                    .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.55f), RoundedCornerShape(50))
+                    .clickable { onCycleZoom() }
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Text(
+                    text = "🔍 ${String.format(java.util.Locale.US, "%.1fx", cameraZoomRatio)} HD",
+                    color = Color.White.copy(alpha = 0.90f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
     }
 }
 
 /**
- * STAGE 2: Sub-Zone Selection INSIDE the Proportional / Perspective-Rectified Monitor Screen!
+ * STAGE 2: Sub-Zone Selection INSIDE the Full HD (1920x1080) Proportional Monitor Screen!
  *
- * ZERO top/bottom obstructing bars!
- * Every resize/move drag auto-saves immediately (`onUpdateRect`).
- * Only a small, semi-transparent Back button sits in the top-left corner (`onBackToSetupHub`).
+ * - Warps at Full HD `1920x1080` with anti-alias + contrast clarity filter so text is crystal clear!
+ * - Zero top/bottom obstructing bars; only a small top-left transparent `← Geri` button.
  */
 @Composable
 fun SingleZoneCameraCalibrationScreen(
     zone: RoiZoneType,
     screenQuad: ScreenQuad,
     rect: NormalizedRoiRect,
+    cameraZoomRatio: Float,
+    exposureCompensation: Int,
     onUpdateRect: (NormalizedRoiRect) -> Unit,
     onBackToSetupHub: () -> Unit
 ) {
@@ -357,18 +491,22 @@ fun SingleZoneCameraCalibrationScreen(
         showPreview = false,
         enableFrameAnalysis = true,
         previewView = null,
+        cameraZoomRatio = cameraZoomRatio,
+        exposureCompensation = exposureCompensation,
+        focusCenterNormX = screenQuad.centerX(),
+        focusCenterNormY = screenQuad.centerY(),
         onFrameBitmap = { rawFrame ->
-            // Throttle to 1 frame at a time and never call recycle() on a bitmap bound to Compose UI!
             if (!isWarpingFrame.compareAndSet(false, true)) {
                 rawFrame.recycle()
                 return@CameraXControllerEffect
             }
             try {
+                // Upgraded to Full HD 1920x1080 so subtitle text on the monitor is super sharp!
                 val warped = RoiImageProcessor.warpScreenQuadToFlatBitmap(
                     fullFrame = rawFrame,
                     screenQuad = latestQuad,
-                    targetWidth = 960,
-                    targetHeight = 540
+                    targetWidth = 1920,
+                    targetHeight = 1080
                 )
                 rawFrame.recycle()
                 val composeImg = warped.asImageBitmap()
@@ -393,7 +531,7 @@ fun SingleZoneCameraCalibrationScreen(
         if (currentImg != null) {
             Image(
                 bitmap = currentImg,
-                contentDescription = "Orantılı Düzleştirilmiş Monitör Ekranı",
+                contentDescription = "Full HD Orantılı Düzleştirilmiş Monitör Ekranı",
                 contentScale = ContentScale.FillBounds,
                 modifier = Modifier.fillMaxSize()
             )
@@ -478,7 +616,6 @@ fun SingleZoneCameraCalibrationScreen(
                                 }
                             }.clamp()
 
-                            // Auto-saves immediately on every movement
                             onUpdateRect(updated)
                         }
                     )

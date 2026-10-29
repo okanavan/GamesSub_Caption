@@ -75,6 +75,7 @@ import com.gamessub.caption.model.GamerHudTheme
 import com.gamessub.caption.model.NormalizedRoiRect
 import com.gamessub.caption.model.OcrScriptType
 import com.gamessub.caption.model.RoiZoneType
+import com.gamessub.caption.model.SavedScreenProfile
 import com.gamessub.caption.model.TranslationEngineType
 import com.gamessub.caption.model.TtsVoiceMode
 import java.util.Locale
@@ -290,11 +291,55 @@ fun ScreenSetupHubScreen(
     state: MainUiState,
     onOpenScreenQuadCalibration: () -> Unit,
     onSelectZoneToCalibrate: (RoiZoneType) -> Unit,
+    onCycleZoom: () -> Unit,
+    onSaveProfile: (String) -> Unit,
+    onLoadProfile: (SavedScreenProfile) -> Unit,
+    onDeleteProfile: (String) -> Unit,
     onBackToMainMenu: () -> Unit,
     onStartGame: () -> Unit
 ) {
     val theme = state.hudTheme
     val q = state.screenQuad
+    var showSaveProfileDialog by remember { mutableStateOf(false) }
+    var newProfileNameInput by remember { mutableStateOf("") }
+
+    if (showSaveProfileDialog) {
+        AlertDialog(
+            onDismissRequest = { showSaveProfileDialog = false },
+            title = { Text("📌 Sabit Tripod / Ekran Profilini Kaydet", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Telefonu veya tripodu sabit koyduğunuz bu konumun 4 köşe monitör çerçevesi, altyazı/görev kutuları ve kamera yakınlaştırma (${String.format(Locale.US, "%.1fx", state.cameraZoomRatio)}) ayarı tek pakette kaydedilir.",
+                        fontSize = 12.sp
+                    )
+                    OutlinedTextField(
+                        value = newProfileNameInput,
+                        onValueChange = { newProfileNameInput = it },
+                        label = { Text("Profil Adı (Örn: Masaüstü 27\" Tripod, Salon TV)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onSaveProfile(newProfileNameInput)
+                        newProfileNameInput = ""
+                        showSaveProfileDialog = false
+                    }
+                ) {
+                    Text("Kaydet")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveProfileDialog = false }) {
+                    Text("İptal")
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -316,15 +361,16 @@ fun ScreenSetupHubScreen(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
                     Text(
-                        text = "Ekran Ayarı — 4 Bağımsız Köşe & Orantılı Alt Alanlar",
+                        text = "Ekran Ayarı — 1080p Keskin Odak & Kayıtlı Tripod Profilleri",
                         color = theme.primaryTextColor,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
                     Text(
-                        text = "Önce 4 bağımsız köşe ile monitörün tam yerini seçin; ardından düzleştirilmiş ekran içinde altyazı alanlarını belirleyin.",
-                        color = theme.primaryTextColor.copy(alpha = 0.7f),
-                        fontSize = 12.sp
+                        text = "Aktif Profil: ${state.activeProfileName} • Kamera: Full HD 1080p + Otomatik Odak (${String.format(Locale.US, "%.1fx", state.cameraZoomRatio)})",
+                        color = theme.accentColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
@@ -337,6 +383,120 @@ fun ScreenSetupHubScreen(
                 )
             ) {
                 Text("Oyuna Başla ▶", fontWeight = FontWeight.ExtraBold)
+            }
+        }
+
+        // SAVED TRIPOD / MONITOR PROFILES CARD ("Kayıtlı Ekranlar")
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, Color(0xFFFFD54F).copy(alpha = 0.75f), RoundedCornerShape(14.dp)),
+            colors = CardDefaults.cardColors(containerColor = theme.cardSurfaceColor),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "📌 Kayıtlı Ekranlar (Sabit Tripod / Monitör Profilleri)",
+                            color = Color(0xFFFFD54F),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            text = "Tripodu sabit yere koyduğunuzda hazır kamera, 4 köşe ve altyazı ayarlarını tek dokunuşla yükleyin.",
+                            color = theme.primaryTextColor.copy(alpha = 0.78f),
+                            fontSize = 11.sp
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onCycleZoom) {
+                            Text(
+                                text = "🔍 Zoom: ${String.format(Locale.US, "%.1fx", state.cameraZoomRatio)}",
+                                color = Color(0xFF38BDF8),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Button(
+                            onClick = { showSaveProfileDialog = true },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFFFD54F),
+                                contentColor = Color.Black
+                            )
+                        ) {
+                            Text("+ Mevcut Ayarı Kaydet", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                // Saved profile chips / quick-load cards
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    state.savedProfiles.forEach { profile ->
+                        val isCurrent = (state.activeProfileName == profile.name)
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (isCurrent) Color(0xFFFFD54F).copy(alpha = 0.18f)
+                                    else Color.Black.copy(alpha = 0.32f)
+                                )
+                                .border(
+                                    width = if (isCurrent) 1.5.dp else 1.dp,
+                                    color = if (isCurrent) Color(0xFFFFD54F) else Color.White.copy(alpha = 0.18f),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .clickable { onLoadProfile(profile) }
+                                .padding(horizontal = 10.dp, vertical = 8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (isCurrent) "✓ ${profile.name}" else profile.name,
+                                        color = if (isCurrent) Color(0xFFFFD54F) else theme.primaryTextColor,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        text = "Zoom ${String.format(Locale.US, "%.1fx", profile.cameraZoomRatio)} • 4 Köşe + 3 Alan Hazır",
+                                        color = theme.primaryTextColor.copy(alpha = 0.60f),
+                                        fontSize = 10.sp,
+                                        maxLines = 1
+                                    )
+                                }
+                                if (state.savedProfiles.size > 1) {
+                                    Text(
+                                        text = "✕",
+                                        color = Color(0xFFEF5350),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier
+                                            .clickable { onDeleteProfile(profile.id) }
+                                            .padding(start = 6.dp, top = 2.dp, bottom = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -476,6 +636,10 @@ fun GameTrackingHudScreen(
         showPreview = isLiveBlurMode,
         enableFrameAnalysis = true,
         previewView = if (isLiveBlurMode) livePreviewView else null,
+        cameraZoomRatio = state.cameraZoomRatio,
+        exposureCompensation = state.exposureCompensation,
+        focusCenterNormX = state.screenQuad.centerX(),
+        focusCenterNormY = state.screenQuad.centerY(),
         onFrameBitmap = onFrameBitmap
     )
 

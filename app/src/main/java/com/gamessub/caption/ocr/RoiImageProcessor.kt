@@ -3,6 +3,8 @@ package com.gamessub.caption.ocr
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
 import com.gamessub.caption.model.DominantSubtitleColor
@@ -12,16 +14,15 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Two-Stage Perspective & ROI Image Processor:
+ * Two-Stage High-Definition (Full HD 1920x1080) Perspective & ROI Image Processor:
  *
- * Stage 1: Perspective Warp (`warpScreenQuadToFlatBitmap`)
+ * Stage 1: Full HD Perspective Warp (`warpScreenQuadToFlatBitmap`)
  *   Takes the 4 independent corners of the monitor selected in the camera (`ScreenQuad`)
- *   and uses `Matrix.setPolyToPoly` (Homography) to flatten/rectify the angled monitor into a
- *   clean, proportional rectangular screen bitmap.
+ *   and uses `Matrix.setPolyToPoly` (Homography) with bilinear/anti-alias filtering + subtle
+ *   contrast enhancement to flatten the angled monitor into a crisp 1920x1080 Full HD screen bitmap!
  *
- * Stage 2: Sub-ROI Cropping & High-Contrast Filtering
- *   - For SUBTITLE, QUEST, and DIALOGUE: Crops the user's sub-frame inside the flattened monitor bitmap.
- *   - For BLUR MODE (`LIVE_AR_BLUR`): Uses the entire flattened monitor bitmap (no sub-frame required!).
+ * Stage 2: Sub-ROI Cropping & High-Contrast Subtitle Glyph Enhancement
+ *   Isolates bright subtitle letters and dark outlines from moving background textures.
  */
 object RoiImageProcessor {
 
@@ -31,13 +32,14 @@ object RoiImageProcessor {
     )
 
     /**
-     * Warps the 4-corner polygon (`ScreenQuad`) from the raw camera frame into a flat rectangular bitmap.
+     * Warps the 4-corner polygon (`ScreenQuad`) from the raw camera frame into a crisp
+     * Full HD (`1920x1080` default) rectangular bitmap with micro-contrast enhancement for text clarity.
      */
     fun warpScreenQuadToFlatBitmap(
         fullFrame: Bitmap,
         screenQuad: ScreenQuad,
-        targetWidth: Int = 960,
-        targetHeight: Int = 540
+        targetWidth: Int = 1920,
+        targetHeight: Int = 1080
     ): Bitmap {
         val w = fullFrame.width.toFloat()
         val h = fullFrame.height.toFloat()
@@ -63,6 +65,21 @@ object RoiImageProcessor {
         } catch (_: Exception) {
             false
         }
+
+        // Subtle contrast boost (+14% contrast, slight anti-glare offset) so monitor pixels look crisp
+        val clarityMatrix = ColorMatrix(
+            floatArrayOf(
+                1.14f, 0f, 0f, 0f, -12f,
+                0f, 1.14f, 0f, 0f, -12f,
+                0f, 0f, 1.14f, 0f, -12f,
+                0f, 0f, 0f, 1f, 0f
+            )
+        )
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
+            colorFilter = ColorMatrixColorFilter(clarityMatrix)
+        }
+
         if (!success) {
             val copy = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
             val c = Canvas(copy)
@@ -70,14 +87,13 @@ object RoiImageProcessor {
                 fullFrame,
                 null,
                 android.graphics.Rect(0, 0, targetWidth, targetHeight),
-                null
+                paint
             )
             return copy
         }
 
         val rectified = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(rectified)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         try {
             canvas.drawBitmap(fullFrame, matrix, paint)
         } catch (_: Exception) {
@@ -91,8 +107,13 @@ object RoiImageProcessor {
         roiInsideScreen: NormalizedRoiRect,
         applyHighContrastFilter: Boolean
     ): ProcessedRoiFrame {
-        // 1. Perspective-warp the 4 independent monitor corners into a flat proportional screen
-        val flatScreenBitmap = warpScreenQuadToFlatBitmap(fullFrame, screenQuad)
+        // 1. Perspective-warp the 4 independent monitor corners into a Full HD 1920x1080 flat screen
+        val flatScreenBitmap = warpScreenQuadToFlatBitmap(
+            fullFrame = fullFrame,
+            screenQuad = screenQuad,
+            targetWidth = 1920,
+            targetHeight = 1080
+        )
 
         val clamped = roiInsideScreen.clamp()
         val frameW = flatScreenBitmap.width
@@ -117,7 +138,7 @@ object RoiImageProcessor {
             return ProcessedRoiFrame(cropped, dominantColor)
         }
 
-        val filtered = applySubtitleContrastFilter(cropped)
+        val filtered = applySubtitleContrastAndSharpenFilter(cropped)
         if (filtered !== cropped) {
             cropped.recycle()
         }
@@ -127,8 +148,8 @@ object RoiImageProcessor {
     private fun analyzeDominantBrightColor(bitmap: Bitmap): DominantSubtitleColor {
         val w = bitmap.width
         val h = bitmap.height
-        val stepX = max(1, w / 32)
-        val stepY = max(1, h / 16)
+        val stepX = max(1, w / 36)
+        val stepY = max(1, h / 18)
 
         var yellowVotes = 0
         var cyanVotes = 0
@@ -177,27 +198,38 @@ object RoiImageProcessor {
         }
     }
 
-    private fun applySubtitleContrastFilter(source: Bitmap): Bitmap {
+    /**
+     * Enhances subtitle glyph readability by applying local edge sharpening + contrast stretching.
+     */
+    private fun applySubtitleContrastAndSharpenFilter(source: Bitmap): Bitmap {
         val w = source.width
         val h = source.height
         val pixels = IntArray(w * h)
         source.getPixels(pixels, 0, w, 0, 0, w, h)
 
+        val lumArr = IntArray(w * h)
         for (i in pixels.indices) {
             val c = pixels[i]
-            val r = Color.red(c)
-            val g = Color.green(c)
-            val b = Color.blue(c)
+            lumArr[i] = (Color.red(c) * 77 + Color.green(c) * 150 + Color.blue(c) * 29) shr 8
+        }
 
-            val lum = (r * 77 + g * 150 + b * 29) shr 8
+        for (y in 1 until h - 1) {
+            val rowOffset = y * w
+            for (x in 1 until w - 1) {
+                val idx = rowOffset + x
+                val center = lumArr[idx]
+                // 4-neighbor Laplacian unsharp mask for crisp letter edges
+                val neighbors = lumArr[idx - 1] + lumArr[idx + 1] + lumArr[idx - w] + lumArr[idx + w]
+                val sharpened = (center * 5 - neighbors).coerceIn(0, 255)
 
-            val boosted = when {
-                lum >= 165 -> min(255, lum + 45)
-                lum <= 95 -> max(0, lum - 55)
-                else -> (lum - 95) * 2
-            }.coerceIn(0, 255)
+                val boosted = when {
+                    sharpened >= 160 -> min(255, sharpened + 48)
+                    sharpened <= 92 -> max(0, sharpened - 55)
+                    else -> (sharpened - 92) * 2
+                }.coerceIn(0, 255)
 
-            pixels[i] = Color.rgb(boosted, boosted, boosted)
+                pixels[idx] = Color.rgb(boosted, boosted, boosted)
+            }
         }
 
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)

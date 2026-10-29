@@ -40,6 +40,8 @@ data class ScreenQuad(
     fun maxX(): Float = maxOf(topLeft.x, topRight.x, bottomRight.x, bottomLeft.x)
     fun minY(): Float = minOf(topLeft.y, topRight.y, bottomRight.y, bottomLeft.y)
     fun maxY(): Float = maxOf(topLeft.y, topRight.y, bottomRight.y, bottomLeft.y)
+    fun centerX(): Float = (topLeft.x + topRight.x + bottomRight.x + bottomLeft.x) / 4f
+    fun centerY(): Float = (topLeft.y + topRight.y + bottomRight.y + bottomLeft.y) / 4f
 }
 
 /**
@@ -47,7 +49,7 @@ data class ScreenQuad(
  * - Zones 1, 2, 3 (SUBTITLE, QUEST, DIALOGUE) have their own resizable rectangular frame
  *   positioned INSIDE the flattened/proportional ScreenQuad.
  * - Zone 4 (LIVE_AR_BLUR) does NOT have a separate calibration submenu; it uses the ENTIRE
- *   selected ScreenQuad (`Kameradan Ekran Seçimi` frame) and blurs its background!
+ *   selected ScreenQuad (`Kameradan Ekran Seçimi` frame) and blurs each detected text block in place!
  */
 enum class RoiZoneType(
     val id: Int,
@@ -93,7 +95,7 @@ enum class RoiZoneType(
         id = 4,
         titleTr = "Blur Modu (Tüm Seçili Ekran)",
         shortTitleTr = "Blur Modu",
-        subtitleTr = "Ayrı çerçeve seçilmez; 'Kameradan Ekran Seçimi' ile belirlenen tüm ekran çerçevesini bulanıklaştırıp çevirir.",
+        subtitleTr = "Ayrı çerçeve seçilmez; 'Kameradan Ekran Seçimi' ile belirlenen ekrandaki yazıları kendi yerinde ve boyutunda blurlayarak çevirir.",
         badgeColor = Color(0xFFE040FB),
         isSingleShotDefault = false,
         isLiveArBlurMode = true,
@@ -132,7 +134,6 @@ data class NormalizedRoiRect(
             RoiZoneType.SUBTITLE -> NormalizedRoiRect(0.10f, 0.72f, 0.90f, 0.94f)
             RoiZoneType.QUEST -> NormalizedRoiRect(0.58f, 0.10f, 0.96f, 0.46f)
             RoiZoneType.DIALOGUE -> NormalizedRoiRect(0.18f, 0.46f, 0.82f, 0.76f)
-            // Blur mode uses the entire selected monitor screen (0% .. 100% of ScreenQuad)
             RoiZoneType.LIVE_AR_BLUR -> NormalizedRoiRect(0.0f, 0.0f, 1.0f, 1.0f)
         }
     }
@@ -267,18 +268,30 @@ data class ParsedDialogueLine(
     val dominantColor: DominantSubtitleColor = DominantSubtitleColor.WHITE
 )
 
-/**
- * Represents a localized text block detected on the monitor screen in Blur Mode.
- * Coordinates (`bounds`) are normalized (0.0f .. 1.0f) relative to the rectified monitor screen,
- * and `estimatedLineHeightRatio` represents the height of a single line of text relative to screen height
- * so the translated overlay text can match the original font size!
- */
 data class LocalizedTranslatedBlock(
     val id: String,
     val rawText: String,
     val translatedText: String,
     val bounds: NormalizedRoiRect,
     val estimatedLineHeightRatio: Float
+)
+
+/**
+ * Represents a saved Tripod / Monitor Screen Profile containing:
+ * - The 4 independent corners of the monitor (`screenQuad`)
+ * - The 3 sub-zone rectangles (`subtitleRect`, `questRect`, `dialogueRect`)
+ * - The camera optical/digital zoom ratio (`cameraZoomRatio`, e.g., 1.0f .. 4.0f)
+ * - Exposure compensation index (`exposureCompensation`, e.g., -2 to prevent TV glare)
+ */
+data class SavedScreenProfile(
+    val id: String,
+    val name: String,
+    val screenQuad: ScreenQuad,
+    val subtitleRect: NormalizedRoiRect,
+    val questRect: NormalizedRoiRect,
+    val dialogueRect: NormalizedRoiRect,
+    val cameraZoomRatio: Float = 1.0f,
+    val exposureCompensation: Int = -2
 )
 
 data class SupportedLanguage(

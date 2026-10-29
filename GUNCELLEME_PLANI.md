@@ -1,6 +1,6 @@
-# GamesSub_Caption — Güncelleme ve Modernizasyon Planı (v1.2 — Perspektif & 4 Bağımsız Köşe Mimarisi)
+# GamesSub_Caption — Güncelleme ve Modernizasyon Planı (v1.4 — 1080p Keskin Odak, Otomatik Kalite Artırma & Kayıtlı Tripod Profilleri)
 
-Bu belge, **GamesSub_Caption** uygulamasının menü mimarisini, **4 Köşesi Bağımsız Hareket Edebilen Kameradan Ekran Seçimi (Perspective Quad / Homography)** sistemini, düzleştirilmiş ekran üzerinde alt alan seçimlerini, yazı odaklı ultra-minimal oyun takip ekranını ve **Blur Modu** çalışma prensibini içerir.
+Bu belge, **GamesSub_Caption** uygulamasının menü mimarisini, **4 Köşesi Bağımsız Hareket Edebilen Kameradan Ekran Seçimi (Perspective Quad / Homography)** sistemini, **1080p Full HD Kamera + Otomatik Odaklama/Keskinleştirme (AF/AE + Unsharp Mask)** motorunu, **Kayıtlı Ekranlar (Sabit Tripod Profilleri)** sistemini, yazı odaklı ultra-minimal oyun takip ekranını ve **Blur Modu** çalışma prensibini içerir.
 
 ---
 
@@ -58,3 +58,24 @@ Monitörün 4 köşesi seçilip ekrana orantılı şekilde yerleştirildikten so
 ## 5. Gelişmiş Tema Sistemi (Arka Plan + Yazı Rengi) & Çoklu Karakter Seslendirme
 * **Temalar:** Sadece yazı rengi değil, arka plan rengi de değişir (*Modern Koyu Slate `#0F172A`*, *OLED Tam Siyah `#000000`*, *Sinematik Antrasit `#121318`*, *Zümrüt RPG `#0B1914`*, *Siber Gece `#0D0B1E`*, *Eye-Care Amber `#160F07`*).
 * **Çoklu Karakter Seslendirme:** Altyazıdaki karakter ismine (`Geralt:`, `[Yennefer]`), altyazı rengine veya karşılıklı diyalog sırasına göre sesi otomatik değiştirir; karakter ismini sesli okumadan atlar.
+
+---
+
+## 6. Kamera Piksel Kalitesi Artırma, Otomatik Odaklama (AF/AE) & Kayıtlı Tripod Ekran Profilleri (v1.4)
+
+### A. Kamera Piksel Kalitesi ve Yazı Keskinleştirme (1080p + Spot AF/AE + Laplacian Sharpen)
+1. **720p'den 1080p Full HD'ye Yükseltme:**
+   * Hem CameraX `ImageAnalysis` / `Preview` akışı hem de 4 köşeli perspektif düzeltme (`warpScreenQuadToFlatBitmap`) çözünürlüğü `960x540` yerine **Full HD `1920x1080`** seviyesine çıkarıldı (~4 kat daha fazla piksel detayı).
+2. **Monitör Merkezine Otomatik Odaklama (`FocusMeteringAction` AF + AE) ve Çift Dokunuşla Odak:**
+   * Kamera, seçilen 4 köşeli monitör çerçevesinin tam merkezine (`ScreenQuad.centerX()`, `centerY()`) otomatik **Spot Auto-Focus (AF)** ve **Spot Auto-Exposure (AE)** kilitler.
+   * Ayrıca 4 köşe seçim ekranında herhangi bir yere **çift dokunarak (Double-Tap)** o noktadaki yazıya anında ekstra odaklama yapılabilir.
+3. **Anti-Glare (Monitör Parlaması Önleme) & Laplacian Harf Keskinleştirme:**
+   * Karanlık odada parlak monitör çekilirken harflerin patlamasını önlemek için otomatik `-2 EV` pozlama telafisi (`ExposureCompensation`) ve `%14` mikro-kontrast + **Laplacian 4-Komşulu Keskinleştirme (Unsharp Mask)** filtresi eklendi.
+4. **Kamera Optik/Dijital Yakınlaştırma (`1.0x – 3.2x HD Zoom`):**
+   * Tripod monitörden biraz uzakta durduğunda sağ üstteki ufak şeffaf `🔍 1.0x HD` rozetine veya Ekran Ayarı menüsündeki Zoom butonuna dokunarak kamera yakınlaştırılabilir.
+
+### B. Sabit Tripod İçin "Kayıtlı Ekranlar" (Hazır Kamera & Çerçeve Profilleri)
+* **Otomatik Kalıcı Hafıza (`SharedPreferences`):** Yaptığınız son 4 köşe monitör seçimi, alt alan kutuları (`Ana Altyazı`, `Görev`, `Kullanıcı Seçimi`) ve kamera Zoom ayarı uygulama kapatılıp açılsa bile **otomatik olarak hatırlanır**.
+* **📌 Kayıtlı Ekranlar (Sabit Tripod / Monitör Profilleri):**
+  * **Ekran Ayarı** menüsünün en üstünde **Kayıtlı Ekranlar** kartı yer alır.
+  * `+ Mevcut Ayarı Kaydet` butonuyla sabit tripod konumunuzu (ör. *"Masaüstü 27 inç Tripod"*, *"Salon TV Koltuk"*) kaydedebilir ve daha sonra tripodu aynı yere koyduğunuzda **tek dokunuşla** tüm kamera/çerçeve ayarlarını anında yükleyebilirsiniz.

@@ -11,6 +11,7 @@ import com.gamessub.caption.model.LocalizedTranslatedBlock
 import com.gamessub.caption.model.NormalizedRoiRect
 import com.gamessub.caption.model.OcrScriptType
 import com.gamessub.caption.model.RoiZoneType
+import com.gamessub.caption.model.SavedScreenProfile
 import com.gamessub.caption.model.ScreenQuad
 import com.gamessub.caption.model.TranslationEngineType
 import com.gamessub.caption.model.TtsVoiceMode
@@ -18,6 +19,7 @@ import com.gamessub.caption.ocr.MlKitOcrEngine
 import com.gamessub.caption.ocr.RoiImageProcessor
 import com.gamessub.caption.translation.HybridTranslationManager
 import com.gamessub.caption.tts.MultiVoiceTtsManager
+import com.gamessub.caption.util.ScreenProfileStorage
 import com.gamessub.caption.util.SpeakerParser
 import com.gamessub.caption.util.TextStabilityFilter
 import kotlinx.coroutines.Dispatchers
@@ -61,6 +63,11 @@ data class MainUiState(
     val hudTheme: GamerHudTheme = GamerHudTheme.STUDIO_SLATE,
     val fontSizeSp: Float = 28f,
 
+    val cameraZoomRatio: Float = 1.0f,
+    val exposureCompensation: Int = -2,
+    val savedProfiles: List<SavedScreenProfile> = emptyList(),
+    val activeProfileName: String = "Son Aktif Tripod Ayarı",
+
     val rawDetectedText: String = "",
     val translatedText: String = "Altyazı bekleniyor... (Test için üst şeffaf bardaki ▶ Test butonuna dokunabilirsiniz)",
     val activeSpeakerName: String? = null,
@@ -89,6 +96,7 @@ data class MainUiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val proAccessManager = ProAccessManager(application)
+    private val screenProfileStorage = ScreenProfileStorage(application)
     private val ocrEngine = MlKitOcrEngine()
     private val translationManager = HybridTranslationManager()
     private val ttsManager = MultiVoiceTtsManager(application)
@@ -102,7 +110,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         refreshProAndKeysState()
+        loadPersistedScreenProfilesAndLastState()
         ttsManager.setTargetLanguage(_uiState.value.targetLanguageCode)
+    }
+
+    private fun loadPersistedScreenProfilesAndLastState() {
+        val profiles = screenProfileStorage.loadSavedProfiles()
+        val lastActive = screenProfileStorage.loadLastActiveState()
+        _uiState.update { state ->
+            if (lastActive != null) {
+                state.copy(
+                    screenQuad = lastActive.screenQuad,
+                    roiMap = mapOf(
+                        RoiZoneType.SUBTITLE to lastActive.subtitleRect,
+                        RoiZoneType.QUEST to lastActive.questRect,
+                        RoiZoneType.DIALOGUE to lastActive.dialogueRect,
+                        RoiZoneType.LIVE_AR_BLUR to NormalizedRoiRect.defaultFor(RoiZoneType.LIVE_AR_BLUR)
+                    ),
+                    cameraZoomRatio = lastActive.cameraZoomRatio,
+                    exposureCompensation = lastActive.exposureCompensation,
+                    savedProfiles = profiles
+                )
+            } else {
+                state.copy(savedProfiles = profiles)
+            }
+        }
+    }
+
+    private fun autoPersistCurrentScreenSetup() {
+        val s = _uiState.value
+        screenProfileStorage.saveLastActiveState(
+            screenQuad = s.screenQuad,
+            roiMap = s.roiMap,
+            cameraZoomRatio = s.cameraZoomRatio,
+            exposureCompensation = s.exposureCompensation
+        )
     }
 
     private fun refreshProAndKeysState() {
@@ -153,6 +195,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateScreenQuad(newQuad: ScreenQuad) {
         _uiState.update {
             it.copy(screenQuad = newQuad.clamp())
+        }
+        autoPersistCurrentScreenSetup()
+    }
+
+    fun cycleCameraZoom() {
+        val zoomPresets = listOf(1.0f, 1.4f, 1.8f, 2.5f, 3.2f)
+        val current = _uiState.value.cameraZoomRatio
+        val idx = zoomPresets.indexOfFirst { kotlin.math.abs(it - current) < 0.1f }
+        val nextZoom = zoomPresets[(idx + 1) % zoomPresets.size]
+        _uiState.update {
+            it.copy(
+                cameraZoomRatio = nextZoom,
+                statusToastMessage = "Kamera Optik/Dijital Yakınlaştırma: ${String.format(java.util.Locale.US, "%.1fx", nextZoom)} HD"
+            )
+        }
+        autoPersistCurrentScreenSetup()
+    }
+
+    fun saveCurrentAsProfile(profileName: String) {
+        val cleanName = profileName.trim().ifEmpty { "Tripod Profili ${(_uiState.value.savedProfiles.size + 1)}" }
+        val s = _uiState.value
+        val newProfile = SavedScreenProfile(
+            id = "profile_${System.currentTimeMillis()}",
+            name = cleanName,
+            screenQuad = s.screenQuad,
+            subtitleRect = s.roiMap[RoiZoneType.SUBTITLE] ?: NormalizedRoiRect.defaultFor(RoiZoneType.SUBTITLE),
+            questRect = s.roiMap[RoiZoneType.QUEST] ?: NormalizedRoiRect.defaultFor(RoiZoneType.QUEST),
+            dialogueRect = s.roiMap[RoiZoneType.DIALOGUE] ?: NormalizedRoiRect.defaultFor(RoiZoneType.DIALOGUE),
+            cameraZoomRatio = s.cameraZoomRatio,
+            exposureCompensation = s.exposureCompensation
+        )
+        val updatedList = screenProfileStorage.saveOrUpdateProfile(newProfile)
+        autoPersistCurrentScreenSetup()
+        _uiState.update {
+            it.copy(
+                savedProfiles = updatedList,
+                activeProfileName = cleanName,
+                statusToastMessage = "\"$cleanName\" kayıtlı ekranlara eklendi!"
+            )
+        }
+    }
+
+    fun loadSavedProfile(profile: SavedScreenProfile) {
+        _uiState.update { state ->
+            state.copy(
+                screenQuad = profile.screenQuad,
+                roiMap = mapOf(
+                    RoiZoneType.SUBTITLE to profile.subtitleRect,
+                    RoiZoneType.QUEST to profile.questRect,
+                    RoiZoneType.DIALOGUE to profile.dialogueRect,
+                    RoiZoneType.LIVE_AR_BLUR to NormalizedRoiRect.defaultFor(RoiZoneType.LIVE_AR_BLUR)
+                ),
+                cameraZoomRatio = profile.cameraZoomRatio,
+                exposureCompensation = profile.exposureCompensation,
+                activeProfileName = profile.name,
+                statusToastMessage = "\"${profile.name}\" kamera ve ekran ayarları yüklendi!"
+            )
+        }
+        autoPersistCurrentScreenSetup()
+    }
+
+    fun deleteSavedProfile(profileId: String) {
+        val updatedList = screenProfileStorage.deleteProfile(profileId)
+        _uiState.update {
+            it.copy(
+                savedProfiles = updatedList,
+                statusToastMessage = "Kayıtlı ekran profili silindi."
+            )
         }
     }
 
@@ -218,6 +328,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             updated[zone] = newRect.clamp()
             state.copy(roiMap = updated)
         }
+        autoPersistCurrentScreenSetup()
     }
 
     fun triggerManualQuestRescan() {
@@ -298,8 +409,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val rectifiedScreen = RoiImageProcessor.warpScreenQuadToFlatBitmap(
                         fullFrame = fullFrameBitmap,
                         screenQuad = quad,
-                        targetWidth = 960,
-                        targetHeight = 540
+                        targetWidth = 1920,
+                        targetHeight = 1080
                     )
                     fullFrameBitmap.recycle()
 

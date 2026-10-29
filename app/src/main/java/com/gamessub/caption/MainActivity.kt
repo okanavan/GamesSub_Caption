@@ -121,6 +121,10 @@ class MainActivity : ComponentActivity() {
                                 state = uiState,
                                 onOpenScreenQuadCalibration = viewModel::openScreenQuadCalibration,
                                 onSelectZoneToCalibrate = viewModel::openZoneCalibrationCamera,
+                                onCycleZoom = viewModel::cycleCameraZoom,
+                                onSaveProfile = viewModel::saveCurrentAsProfile,
+                                onLoadProfile = viewModel::loadSavedProfile,
+                                onDeleteProfile = viewModel::deleteSavedProfile,
                                 onBackToMainMenu = {
                                     viewModel.setScreenMode(ScreenMode.HOME_MAIN_MENU)
                                 },
@@ -133,6 +137,9 @@ class MainActivity : ComponentActivity() {
                         ScreenMode.SCREEN_QUAD_CALIBRATION -> {
                             ScreenQuadCameraCalibrationScreen(
                                 screenQuad = uiState.screenQuad,
+                                cameraZoomRatio = uiState.cameraZoomRatio,
+                                exposureCompensation = uiState.exposureCompensation,
+                                onCycleZoom = viewModel::cycleCameraZoom,
                                 onUpdateQuad = viewModel::updateScreenQuad,
                                 onSaveAndBackToHub = {
                                     viewModel.setScreenMode(ScreenMode.SCREEN_SETUP_HUB)
@@ -148,6 +155,8 @@ class MainActivity : ComponentActivity() {
                                 zone = zone,
                                 screenQuad = uiState.screenQuad,
                                 rect = rect,
+                                cameraZoomRatio = uiState.cameraZoomRatio,
+                                exposureCompensation = uiState.exposureCompensation,
                                 onUpdateRect = { updatedRect ->
                                     viewModel.updateRoiForZone(zone, updatedRect)
                                 },
