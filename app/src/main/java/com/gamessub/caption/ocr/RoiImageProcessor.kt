@@ -58,15 +58,30 @@ object RoiImageProcessor {
         )
 
         val matrix = Matrix()
-        val success = matrix.setPolyToPoly(srcPoly, 0, dstPoly, 0, 4)
+        val success = try {
+            matrix.setPolyToPoly(srcPoly, 0, dstPoly, 0, 4)
+        } catch (_: Exception) {
+            false
+        }
         if (!success) {
-            return Bitmap.createScaledBitmap(fullFrame, targetWidth, targetHeight, true)
+            val copy = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+            val c = Canvas(copy)
+            c.drawBitmap(
+                fullFrame,
+                null,
+                android.graphics.Rect(0, 0, targetWidth, targetHeight),
+                null
+            )
+            return copy
         }
 
         val rectified = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(rectified)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        canvas.drawBitmap(fullFrame, matrix, paint)
+        try {
+            canvas.drawBitmap(fullFrame, matrix, paint)
+        } catch (_: Exception) {
+        }
         return rectified
     }
 

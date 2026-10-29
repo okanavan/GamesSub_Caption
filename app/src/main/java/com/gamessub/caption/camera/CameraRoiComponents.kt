@@ -42,6 +42,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size as ComposeSize
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.asImageBitmap
@@ -346,18 +347,39 @@ fun SingleZoneCameraCalibrationScreen(
     onUpdateRect: (NormalizedRoiRect) -> Unit,
     onBackToSetupHub: () -> Unit
 ) {
-    var rectifiedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    val context = LocalContext.current
+    val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
+    var rectifiedImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    val isWarpingFrame = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val latestQuad by rememberUpdatedState(screenQuad)
 
     CameraXControllerEffect(
         showPreview = false,
         enableFrameAnalysis = true,
         previewView = null,
         onFrameBitmap = { rawFrame ->
-            val warped = RoiImageProcessor.warpScreenQuadToFlatBitmap(rawFrame, screenQuad, 960, 540)
-            rawFrame.recycle()
-            val prev = rectifiedBitmap
-            rectifiedBitmap = warped
-            prev?.recycle()
+            // Throttle to 1 frame at a time and never call recycle() on a bitmap bound to Compose UI!
+            if (!isWarpingFrame.compareAndSet(false, true)) {
+                rawFrame.recycle()
+                return@CameraXControllerEffect
+            }
+            try {
+                val warped = RoiImageProcessor.warpScreenQuadToFlatBitmap(
+                    fullFrame = rawFrame,
+                    screenQuad = latestQuad,
+                    targetWidth = 960,
+                    targetHeight = 540
+                )
+                rawFrame.recycle()
+                val composeImg = warped.asImageBitmap()
+                mainExecutor.execute {
+                    rectifiedImageBitmap = composeImg
+                    isWarpingFrame.set(false)
+                }
+            } catch (_: Exception) {
+                rawFrame.recycle()
+                isWarpingFrame.set(false)
+            }
         }
     )
 
@@ -367,10 +389,10 @@ fun SingleZoneCameraCalibrationScreen(
     var activeDragHandle by remember { mutableStateOf(DragHandleMode.NONE) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B1120))) {
-        val currentBmp = rectifiedBitmap
-        if (currentBmp != null && !currentBmp.isRecycled) {
+        val currentImg = rectifiedImageBitmap
+        if (currentImg != null) {
             Image(
-                bitmap = currentBmp.asImageBitmap(),
+                bitmap = currentImg,
                 contentDescription = "Orantılı Düzleştirilmiş Monitör Ekranı",
                 contentScale = ContentScale.FillBounds,
                 modifier = Modifier.fillMaxSize()
