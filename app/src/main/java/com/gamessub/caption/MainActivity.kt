@@ -22,15 +22,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.gamessub.caption.camera.RoiCalibrationScreen
+import com.gamessub.caption.camera.ScreenQuadCameraCalibrationScreen
+import com.gamessub.caption.camera.SingleZoneCameraCalibrationScreen
+import com.gamessub.caption.model.NormalizedRoiRect
+import com.gamessub.caption.ui.GameTrackingHudScreen
+import com.gamessub.caption.ui.HomeMainMenuScreen
 import com.gamessub.caption.ui.MainViewModel
-import com.gamessub.caption.ui.OledFullscreenHudScreen
 import com.gamessub.caption.ui.ScreenMode
+import com.gamessub.caption.ui.ScreenSetupHubScreen
 import com.gamessub.caption.ui.SettingsAndByokScreen
 
 class MainActivity : ComponentActivity() {
@@ -40,12 +43,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Keep screen on while translating game subtitles & hide system bars for pure OLED HUD
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemBars()
 
         setContent {
             val uiState by viewModel.uiState.collectAsState()
+            val theme = uiState.hudTheme
 
             var hasCameraPermission by remember {
                 mutableStateOf(
@@ -68,14 +71,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Automatically dim physical window brightness when idle for a long time on OLED
             LaunchedEffect(uiState.isScreenDimmed) {
                 val params = window.attributes
-                params.screenBrightness = if (uiState.isScreenDimmed) 0.08f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                params.screenBrightness = if (uiState.isScreenDimmed) {
+                    0.08f
+                } else {
+                    WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                }
                 window.attributes = params
             }
 
-            // Show non-blocking Toast notifications when needed
             LaunchedEffect(uiState.statusToastMessage) {
                 uiState.statusToastMessage?.let { msg ->
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
@@ -83,60 +88,105 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            val oledColorScheme = darkColorScheme(
-                background = Color.Black,
-                surface = Color.Black,
-                primary = Color(0xFFFFD600),
-                secondary = Color(0xFF00E5FF)
+            val dynamicColorScheme = darkColorScheme(
+                background = theme.backgroundColor,
+                surface = theme.cardSurfaceColor,
+                primary = theme.accentColor,
+                secondary = theme.speakerBadgeColor
             )
 
-            MaterialTheme(colorScheme = oledColorScheme) {
+            MaterialTheme(colorScheme = dynamicColorScheme) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = Color.Black
+                    color = theme.backgroundColor
                 ) {
                     when (uiState.screenMode) {
-                        ScreenMode.ROI_CALIBRATION_CAMERA -> {
-                            RoiCalibrationScreen(
-                                activeZone = uiState.activeZone,
-                                roiMap = uiState.roiMap,
-                                isProUnlocked = uiState.isProUnlocked,
-                                onSelectZone = viewModel::selectActiveZone,
-                                onUpdateActiveRoi = viewModel::updateRoiForActiveZone,
-                                onFinishCalibration = {
-                                    viewModel.setScreenMode(ScreenMode.OLED_FULLSCREEN_HUD)
+                        ScreenMode.HOME_MAIN_MENU -> {
+                            HomeMainMenuScreen(
+                                state = uiState,
+                                onStartGame = {
+                                    viewModel.setScreenMode(ScreenMode.GAME_TRACKING_HUD)
+                                },
+                                onOpenScreenSetupHub = {
+                                    viewModel.setScreenMode(ScreenMode.SCREEN_SETUP_HUB)
+                                },
+                                onOpenSettings = {
+                                    viewModel.setScreenMode(ScreenMode.SETTINGS_SCREEN)
+                                }
+                            )
+                        }
+
+                        ScreenMode.SCREEN_SETUP_HUB -> {
+                            ScreenSetupHubScreen(
+                                state = uiState,
+                                onOpenScreenQuadCalibration = viewModel::openScreenQuadCalibration,
+                                onSelectZoneToCalibrate = viewModel::openZoneCalibrationCamera,
+                                onBackToMainMenu = {
+                                    viewModel.setScreenMode(ScreenMode.HOME_MAIN_MENU)
+                                },
+                                onStartGame = {
+                                    viewModel.setScreenMode(ScreenMode.GAME_TRACKING_HUD)
+                                }
+                            )
+                        }
+
+                        ScreenMode.SCREEN_QUAD_CALIBRATION -> {
+                            ScreenQuadCameraCalibrationScreen(
+                                screenQuad = uiState.screenQuad,
+                                onUpdateQuad = viewModel::updateScreenQuad,
+                                onSaveAndBackToHub = {
+                                    viewModel.setScreenMode(ScreenMode.SCREEN_SETUP_HUB)
                                 },
                                 onFrameBitmap = viewModel::onCameraFrameAvailable
                             )
                         }
 
-                        ScreenMode.OLED_FULLSCREEN_HUD -> {
-                            OledFullscreenHudScreen(
+                        ScreenMode.ZONE_CAMERA_CALIBRATION -> {
+                            val zone = uiState.calibratingZone
+                            val rect = uiState.roiMap[zone] ?: NormalizedRoiRect.defaultFor(zone)
+                            SingleZoneCameraCalibrationScreen(
+                                zone = zone,
+                                screenQuad = uiState.screenQuad,
+                                rect = rect,
+                                onUpdateRect = { updatedRect ->
+                                    viewModel.updateRoiForZone(zone, updatedRect)
+                                },
+                                onBackToSetupHub = {
+                                    viewModel.setScreenMode(ScreenMode.SCREEN_SETUP_HUB)
+                                },
+                                onStartGameNow = {
+                                    viewModel.setScreenMode(ScreenMode.GAME_TRACKING_HUD)
+                                }
+                            )
+                        }
+
+                        ScreenMode.GAME_TRACKING_HUD -> {
+                            GameTrackingHudScreen(
                                 state = uiState,
                                 onSelectZone = viewModel::selectActiveZone,
                                 onTriggerQuestRescan = viewModel::triggerManualQuestRescan,
                                 onSimulateSample = viewModel::simulateSampleGameLine,
                                 onToggleTts = viewModel::toggleTtsEnabled,
-                                onOpenCalibration = {
-                                    viewModel.setScreenMode(ScreenMode.ROI_CALIBRATION_CAMERA)
-                                },
-                                onOpenSettings = {
-                                    viewModel.setScreenMode(ScreenMode.SETTINGS_AND_BYOK)
+                                onCycleTtsSpeed = viewModel::cycleTtsSpeedPreset,
+                                onBackToMainMenu = {
+                                    viewModel.setScreenMode(ScreenMode.HOME_MAIN_MENU)
                                 },
                                 onFrameBitmap = viewModel::onCameraFrameAvailable
                             )
                         }
 
-                        ScreenMode.SETTINGS_AND_BYOK -> {
+                        ScreenMode.SETTINGS_SCREEN -> {
                             SettingsAndByokScreen(
                                 state = uiState,
-                                onBackToHud = {
-                                    viewModel.setScreenMode(ScreenMode.OLED_FULLSCREEN_HUD)
+                                onBackToMainMenu = {
+                                    viewModel.setScreenMode(ScreenMode.HOME_MAIN_MENU)
                                 },
                                 onSelectLanguages = viewModel::setLanguages,
                                 onSelectOcrScript = viewModel::setOcrScript,
                                 onSelectTranslationEngine = viewModel::setTranslationEngine,
                                 onSelectTtsMode = viewModel::setTtsVoiceMode,
+                                onTtsSpeedChange = viewModel::setTtsSpeed,
+                                onCycleCharacterVoice = viewModel::cycleVoiceForCharacter,
                                 onSelectTheme = viewModel::setHudTheme,
                                 onFontSizeChange = viewModel::setFontSize,
                                 onToggleContrast = viewModel::toggleHighContrastFilter,
@@ -153,10 +203,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Physical Volume Up / Volume Down keys let the gamer switch between
-     * Subtitle (Zone 1) <-> Quest (Zone 2) <-> Dialogue (Zone 3) without looking at the phone.
-     */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_VOLUME_UP -> {
@@ -179,4 +225,3 @@ class MainActivity : ComponentActivity() {
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
 }
-

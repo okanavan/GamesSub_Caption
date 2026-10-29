@@ -10,6 +10,7 @@ import com.gamessub.caption.model.GamerHudTheme
 import com.gamessub.caption.model.NormalizedRoiRect
 import com.gamessub.caption.model.OcrScriptType
 import com.gamessub.caption.model.RoiZoneType
+import com.gamessub.caption.model.ScreenQuad
 import com.gamessub.caption.model.TranslationEngineType
 import com.gamessub.caption.model.TtsVoiceMode
 import com.gamessub.caption.ocr.MlKitOcrEngine
@@ -27,18 +28,24 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
 enum class ScreenMode {
-    ROI_CALIBRATION_CAMERA, // Step 1: Select 3 ROI boxes on monitor
-    OLED_FULLSCREEN_HUD,    // Step 2: Previewless CameraX + Fullscreen #000000 OLED Reader
-    SETTINGS_AND_BYOK       // Step 3: Engines, API Keys, 7-tap Master Key, Themes
+    HOME_MAIN_MENU,
+    SCREEN_SETUP_HUB,
+    SCREEN_QUAD_CALIBRATION, // Stage 1: 4 Independent Corners Monitor Selection
+    ZONE_CAMERA_CALIBRATION, // Stage 2: Sub-ROI Selection inside the Proportional Rectified Screen
+    GAME_TRACKING_HUD,
+    SETTINGS_SCREEN
 }
 
 data class MainUiState(
-    val screenMode: ScreenMode = ScreenMode.OLED_FULLSCREEN_HUD,
+    val screenMode: ScreenMode = ScreenMode.HOME_MAIN_MENU,
     val activeZone: RoiZoneType = RoiZoneType.SUBTITLE,
+    val calibratingZone: RoiZoneType = RoiZoneType.SUBTITLE,
+    val screenQuad: ScreenQuad = ScreenQuad(),
     val roiMap: Map<RoiZoneType, NormalizedRoiRect> = mapOf(
         RoiZoneType.SUBTITLE to NormalizedRoiRect.defaultFor(RoiZoneType.SUBTITLE),
         RoiZoneType.QUEST to NormalizedRoiRect.defaultFor(RoiZoneType.QUEST),
-        RoiZoneType.DIALOGUE to NormalizedRoiRect.defaultFor(RoiZoneType.DIALOGUE)
+        RoiZoneType.DIALOGUE to NormalizedRoiRect.defaultFor(RoiZoneType.DIALOGUE),
+        RoiZoneType.LIVE_AR_BLUR to NormalizedRoiRect.defaultFor(RoiZoneType.LIVE_AR_BLUR)
     ),
     val ocrScript: OcrScriptType = OcrScriptType.LATIN,
     val sourceLanguageCode: String = "en",
@@ -50,24 +57,22 @@ data class MainUiState(
     val autoCatchUpTts: Boolean = true,
     val highContrastFilterEnabled: Boolean = true,
     val volumeKeysSwitchZones: Boolean = true,
-    val hudTheme: GamerHudTheme = GamerHudTheme.OLED_STEALTH,
-    val fontSizeSp: Float = 26f,
+    val hudTheme: GamerHudTheme = GamerHudTheme.STUDIO_SLATE,
+    val fontSizeSp: Float = 28f,
 
-    // Live OCR & Translation Output
     val rawDetectedText: String = "",
-    val translatedText: String = "Oyun ekranında Altyazı veya Görev (Quest) alanını seçin ya da Hızlı Simülasyon ile test edin.",
+    val translatedText: String = "Altyazı bekleniyor... (Test için üst şeffaf bardaki ▶ Test butonuna dokunabilirsiniz)",
     val activeSpeakerName: String? = null,
     val detectedSubtitleColor: DominantSubtitleColor = DominantSubtitleColor.WHITE,
     val activeTtsProfileStatus: String = "Hazır",
+    val assignedCharacterVoices: Map<String, String> = emptyMap(),
 
-    // Dynamic Scanning & Power Saving Telemetry
-    val currentScanIntervalMs: Long = 400L,
+    val currentScanIntervalMs: Long = 380L,
     val isIdlePowerSave: Boolean = false,
     val isQuestSingleShotSleeping: Boolean = false,
     val isScreenDimmed: Boolean = false,
     val lastTextDetectedTimestampMs: Long = System.currentTimeMillis(),
 
-    // PRO & Monetization State
     val isProUnlocked: Boolean = true,
     val showBottomBannerAd: Boolean = false,
     val proStatusBadge: String = "",
@@ -106,7 +111,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 proStatusBadge = proAccessManager.getStatusBadgeText(),
                 deepLApiKey = proAccessManager.deepLApiKey,
                 geminiApiKey = proAccessManager.geminiApiKey,
-                // Enforce Free tier rules if trial expired & not unlocked
                 activeZone = if (!hasPro) RoiZoneType.SUBTITLE else state.activeZone,
                 translationEngine = if (!hasPro && state.translationEngine.requiresPro) {
                     TranslationEngineType.OFFLINE_MLKIT
@@ -119,7 +123,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     state.ttsVoiceMode
                 },
                 hudTheme = if (!hasPro && state.hudTheme.requiresPro) {
-                    GamerHudTheme.OLED_STEALTH
+                    GamerHudTheme.STUDIO_SLATE
                 } else {
                     state.hudTheme
                 }
@@ -137,11 +141,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun openScreenQuadCalibration() {
+        _uiState.update {
+            it.copy(screenMode = ScreenMode.SCREEN_QUAD_CALIBRATION)
+        }
+    }
+
+    fun updateScreenQuad(newQuad: ScreenQuad) {
+        _uiState.update {
+            it.copy(screenQuad = newQuad.clamp())
+        }
+    }
+
+    fun openZoneCalibrationCamera(zone: RoiZoneType) {
+        val state = _uiState.value
+        if (!state.isProUnlocked && zone != RoiZoneType.SUBTITLE) {
+            _uiState.update {
+                it.copy(statusToastMessage = "${zone.titleTr} PRO sürüm özelliğidir.")
+            }
+            return
+        }
+        _uiState.update {
+            it.copy(
+                calibratingZone = zone,
+                activeZone = zone,
+                screenMode = ScreenMode.ZONE_CAMERA_CALIBRATION
+            )
+        }
+    }
+
     fun selectActiveZone(zone: RoiZoneType) {
         val state = _uiState.value
         if (!state.isProUnlocked && zone != RoiZoneType.SUBTITLE) {
             _uiState.update {
-                it.copy(statusToastMessage = "Görev (Quest) ve Diyalog alanları PRO sürüm özelliğidir.")
+                it.copy(statusToastMessage = "${zone.shortTitleTr} alanı PRO sürüm özelliğidir.")
             }
             return
         }
@@ -156,10 +189,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Triggered by Physical Volume Up / Volume Down buttons so the gamer can switch
-     * between Subtitle, Quest, and Dialogue zones without looking at the phone screen.
-     */
     fun cycleZoneByVolumeKey(forward: Boolean): Boolean {
         val state = _uiState.value
         if (!state.volumeKeysSwitchZones) return false
@@ -180,46 +209,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
-    fun updateRoiForActiveZone(newRect: NormalizedRoiRect) {
-        val currentZone = _uiState.value.activeZone
+    fun updateRoiForZone(zone: RoiZoneType, newRect: NormalizedRoiRect) {
         _uiState.update { state ->
             val updated = state.roiMap.toMutableMap()
-            updated[currentZone] = newRect.clamp()
+            updated[zone] = newRect.clamp()
             state.copy(roiMap = updated)
         }
     }
 
-    /**
-     * Re-triggers single-shot Quest OCR scan when the user is on Quest Zone 2.
-     */
     fun triggerManualQuestRescan() {
         lastStableOcrByZone.remove(RoiZoneType.QUEST)
         _uiState.update {
             it.copy(
                 isQuestSingleShotSleeping = false,
                 isScreenDimmed = false,
-                statusToastMessage = "Görev (Quest) penceresi yeniden taranıyor..."
+                statusToastMessage = "Görev (Quest) alanı yeniden taranıyor..."
             )
         }
     }
 
-    /**
-     * Core Previewless CameraX Frame Analyzer Entry Point:
-     * - Respects dynamic scan interval (350-450ms active, 1000ms after 10s idle).
-     * - Pauses automatically after 1 clean read in Quest Single-Shot mode.
-     * - Crops ONLY the active ROI rectangle.
-     * - Applies 85% Levenshtein Anti-Flicker filter before calling Translation & TTS.
-     */
+    fun setTtsSpeed(speed: Float) {
+        val clamped = speed.coerceIn(0.75f, 1.75f)
+        _uiState.update { it.copy(ttsBaseSpeed = clamped) }
+    }
+
+    fun cycleTtsSpeedPreset() {
+        val presets = listOf(0.90f, 1.00f, 1.15f, 1.30f, 1.50f)
+        val current = _uiState.value.ttsBaseSpeed
+        val idx = presets.indexOfFirst { kotlin.math.abs(it - current) < 0.06f }
+        val nextSpeed = presets[(idx + 1) % presets.size]
+        setTtsSpeed(nextSpeed)
+    }
+
+    fun cycleVoiceForCharacter(speakerName: String) {
+        val newProfile = ttsManager.cycleCharacterVoiceProfile(speakerName)
+        syncCharacterVoiceMap()
+        _uiState.update {
+            it.copy(statusToastMessage = "$speakerName -> ${newProfile.label}")
+        }
+    }
+
+    private fun syncCharacterVoiceMap() {
+        val mapped = ttsManager.getAssignedCharacters().mapValues { it.value.label }
+        _uiState.update { it.copy(assignedCharacterVoices = mapped) }
+    }
+
     fun onCameraFrameAvailable(fullFrameBitmap: Bitmap) {
         val state = _uiState.value
 
-        // Only run background OCR when in OLED Fullscreen HUD mode
-        if (state.screenMode != ScreenMode.OLED_FULLSCREEN_HUD) {
+        if (state.screenMode != ScreenMode.GAME_TRACKING_HUD) {
             fullFrameBitmap.recycle()
             return
         }
 
-        // If Quest Zone is in Single-Shot Sleep mode, skip processing to save 100% CPU/battery
         if (state.activeZone == RoiZoneType.QUEST && state.isQuestSingleShotSleeping) {
             fullFrameBitmap.recycle()
             return
@@ -239,19 +281,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         lastFrameProcessedAtMs = now
 
         val activeZone = state.activeZone
-        val roiRect = state.roiMap[activeZone] ?: NormalizedRoiRect.defaultFor(activeZone)
+        val quad = state.screenQuad
+        // For Blur Mode, use the ENTIRE selected ScreenQuad (0..1); for other zones, use their sub-box inside the quad
+        val roiRect = if (activeZone.isLiveArBlurMode) {
+            NormalizedRoiRect(0.0f, 0.0f, 1.0f, 1.0f)
+        } else {
+            state.roiMap[activeZone] ?: NormalizedRoiRect.defaultFor(activeZone)
+        }
 
         viewModelScope.launch(Dispatchers.Default) {
             try {
-                // Step 1 & 2: Crop ONLY active ROI + detect dominant text color + contrast filter
                 val processed = RoiImageProcessor.cropAndProcess(
                     fullFrame = fullFrameBitmap,
-                    roi = roiRect,
+                    screenQuad = quad,
+                    roiInsideScreen = roiRect,
                     applyHighContrastFilter = state.highContrastFilterEnabled
                 )
                 fullFrameBitmap.recycle()
 
-                // Step 3: Multi-script ML Kit OCR v2
                 val rawOcr = ocrEngine.recognizeText(processed.croppedBitmap, state.ocrScript)
                 processed.croppedBitmap.recycle()
 
@@ -279,21 +326,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val cleaned = rawOcrText.trim()
 
         if (cleaned.length < 2) {
-            // Check 10-second idle threshold -> slow scan to 1000ms & dim OLED after 25s
             val idleDurationMs = nowMs - state.lastTextDetectedTimestampMs
             val shouldIdle = idleDurationMs >= 10_000L
-            val shouldDim = idleDurationMs >= 25_000L
+            val shouldDim = idleDurationMs >= 25_000L && !zone.isLiveArBlurMode
             _uiState.update {
                 it.copy(
                     isIdlePowerSave = shouldIdle,
-                    currentScanIntervalMs = if (shouldIdle) 1000L else 400L,
+                    currentScanIntervalMs = if (shouldIdle) 1000L else 380L,
                     isScreenDimmed = shouldDim
                 )
             }
             return
         }
 
-        // Step 3: 85% Levenshtein Anti-Flicker Filter
         val previousForZone = lastStableOcrByZone[zone].orEmpty()
         if (TextStabilityFilter.isDuplicateOrFlicker(previousForZone, cleaned, threshold = 0.85f)) {
             _uiState.update {
@@ -301,16 +346,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     lastTextDetectedTimestampMs = nowMs,
                     isIdlePowerSave = false,
                     isScreenDimmed = false,
-                    currentScanIntervalMs = 400L
+                    currentScanIntervalMs = 380L
                 )
             }
             return
         }
 
-        // New stable subtitle or quest text confirmed!
         lastStableOcrByZone[zone] = cleaned
 
-        // Parse speaker name BEFORE/AFTER translation so speaker name is never read aloud by TTS
         val sourceParsed = SpeakerParser.parse(cleaned, dominantColor)
 
         val translationResult = translationManager.translate(
@@ -332,6 +375,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             userBaseSpeed = state.ttsBaseSpeed,
             autoCatchUpEnabled = state.autoCatchUpTts
         )
+        syncCharacterVoiceMap()
 
         val enterQuestSleep = (zone == RoiZoneType.QUEST && zone.isSingleShotDefault)
 
@@ -351,14 +395,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Simulates live game subtitles & quest logs (e.g., Witcher / Cyberpunk / RPG quests)
-     * so the user can test Multi-Voice TTS, Speaker Extraction, and HUD themes immediately.
-     */
     fun simulateSampleGameLine() {
         val state = _uiState.value
         val samplesByZone = when (state.activeZone) {
-            RoiZoneType.SUBTITLE -> listOf(
+            RoiZoneType.SUBTITLE, RoiZoneType.LIVE_AR_BLUR -> listOf(
                 Triple(
                     "Geralt: Wind's howling... Looks like a storm is coming from the northern hills.",
                     "Rüzgar uğulduyor... Kuzey tepelerinden fırtına geliyor gibi görünüyor.",
@@ -401,6 +441,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             userBaseSpeed = state.ttsBaseSpeed,
             autoCatchUpEnabled = state.autoCatchUpTts
         )
+        syncCharacterVoiceMap()
 
         _uiState.update {
             it.copy(
@@ -463,7 +504,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setFontSize(sizeSp: Float) {
-        _uiState.update { it.copy(fontSizeSp = sizeSp.coerceIn(18f, 42f)) }
+        _uiState.update { it.copy(fontSizeSp = sizeSp.coerceIn(18f, 44f)) }
     }
 
     fun toggleHighContrastFilter(enabled: Boolean) {
@@ -483,9 +524,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * 7-Tap Secret Master Key Trigger in Settings version row.
-     */
     fun onVersionNumberTapped() {
         val nextCount = _uiState.value.versionTapCount + 1
         if (nextCount >= 7) {
@@ -537,4 +575,3 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ttsManager.shutdown()
     }
 }
-

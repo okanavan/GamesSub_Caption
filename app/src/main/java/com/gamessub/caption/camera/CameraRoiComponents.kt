@@ -11,7 +11,9 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,12 +24,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -42,8 +43,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size as ComposeSize
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -51,32 +56,48 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.gamessub.caption.model.NormalizedPoint
 import com.gamessub.caption.model.NormalizedRoiRect
 import com.gamessub.caption.model.RoiZoneType
+import com.gamessub.caption.model.ScreenQuad
+import com.gamessub.caption.ocr.RoiImageProcessor
 import java.util.concurrent.Executors
+import kotlin.math.abs
+import kotlin.math.hypot
 
-/**
- * Manages the CameraX lifecycle with Two Distinct Operating Modes:
- *
- * 1. `showPreview == true` (ROI Calibration Screen):
- *    Binds `Preview` + interactive drag/resize overlay for selecting:
- *    - Zone 1: Subtitle
- *    - Zone 2: Quest / Objective
- *    - Zone 3: Dialogue / Inventory
- *
- * 2. `showPreview == false` (OLED Fullscreen HUD Mode - Previewless CameraX):
- *    Unbinds `Preview` completely so GPU rendering load drops to 0% and screen stays 100% #000000 OLED black.
- *    Binds ONLY `ImageAnalysis` (STRATEGY_KEEP_ONLY_LATEST) to feed frames into the ROI cropper.
- */
+private enum class DragHandleMode {
+    NONE,
+    MOVE_CENTER,
+    CORNER_TOP_LEFT,
+    CORNER_TOP_RIGHT,
+    CORNER_BOTTOM_LEFT,
+    CORNER_BOTTOM_RIGHT,
+    EDGE_TOP,
+    EDGE_BOTTOM,
+    EDGE_LEFT,
+    EDGE_RIGHT
+}
+
+private enum class QuadCornerHandle {
+    NONE,
+    TOP_LEFT,
+    TOP_RIGHT,
+    BOTTOM_RIGHT,
+    BOTTOM_LEFT,
+    MOVE_ALL
+}
+
 @Composable
 fun CameraXControllerEffect(
     showPreview: Boolean,
+    enableFrameAnalysis: Boolean,
     previewView: PreviewView?,
     onFrameBitmap: (Bitmap) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnFrame by rememberUpdatedState(onFrameBitmap)
+    val currentAnalyzeFlag by rememberUpdatedState(enableFrameAnalysis)
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
 
     DisposableEffect(Unit) {
@@ -96,13 +117,14 @@ fun CameraXControllerEffect(
 
             cameraProvider.unbindAll()
 
+            @Suppress("DEPRECATION")
             val imageAnalysis = ImageAnalysis.Builder()
                 .setTargetResolution(Size(1280, 720))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
 
             imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                if (!showPreview) {
+                if (currentAnalyzeFlag) {
                     val bmp = imageProxy.toRotatedBitmap()
                     imageProxy.close()
                     if (bmp != null) {
@@ -125,7 +147,6 @@ fun CameraXControllerEffect(
                         imageAnalysis
                     )
                 } else {
-                    // PREVIEWLESS CAMERAX: Zero GPU preview surface, background ImageAnalysis only!
                     cameraProvider.bindToLifecycle(
                         lifecycleOwner,
                         CameraSelector.DEFAULT_BACK_CAMERA,
@@ -133,7 +154,6 @@ fun CameraXControllerEffect(
                     )
                 }
             } catch (_: Exception) {
-                // Ignore if camera is unavailable on emulator without virtual scene
             }
         }, ContextCompat.getMainExecutor(context))
     }
@@ -166,18 +186,17 @@ private fun ImageProxy.toRotatedBitmap(): Bitmap? {
 }
 
 /**
- * Interactive Multi-ROI Selection Screen where the user aligns the phone with the TV/Monitor,
- * draws/resizes Subtitle (Zone 1), Quest (Zone 2), and Dialogue (Zone 3) boxes, and then switches
- * to Fullscreen OLED Reading Mode (turning off the camera preview).
+ * STAGE 1: 4-Independent-Corner Monitor Screen Calibration ("Kameradan Ekran Seçimi")
+ *
+ * Each of the 4 corners (Top-Left, Top-Right, Bottom-Right, Bottom-Left) moves completely
+ * independently so the user can trace the exact 4 corners of their TV/Monitor from any angle.
+ * Also defines the full frame used by Blur Mode!
  */
 @Composable
-fun RoiCalibrationScreen(
-    activeZone: RoiZoneType,
-    roiMap: Map<RoiZoneType, NormalizedRoiRect>,
-    isProUnlocked: Boolean,
-    onSelectZone: (RoiZoneType) -> Unit,
-    onUpdateActiveRoi: (NormalizedRoiRect) -> Unit,
-    onFinishCalibration: () -> Unit,
+fun ScreenQuadCameraCalibrationScreen(
+    screenQuad: ScreenQuad,
+    onUpdateQuad: (ScreenQuad) -> Unit,
+    onSaveAndBackToHub: () -> Unit,
     onFrameBitmap: (Bitmap) -> Unit
 ) {
     val context = LocalContext.current
@@ -189,12 +208,15 @@ fun RoiCalibrationScreen(
 
     CameraXControllerEffect(
         showPreview = true,
+        enableFrameAnalysis = false,
         previewView = previewView,
         onFrameBitmap = onFrameBitmap
     )
 
+    val latestQuad by rememberUpdatedState(screenQuad)
     var canvasWidthPx by remember { mutableStateOf(1f) }
     var canvasHeightPx by remember { mutableStateOf(1f) }
+    var activeCorner by remember { mutableStateOf(QuadCornerHandle.NONE) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
@@ -202,147 +224,144 @@ fun RoiCalibrationScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Interactive Drag & Resize Canvas for the 3 ROI boxes
+        // Free 4-Corner Polygon Canvas
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(activeZone, roiMap) {
-                    detectDragGestures { change, dragAmount ->
-                        change.consume()
-                        if (canvasWidthPx <= 1f || canvasHeightPx <= 1f) return@detectDragGestures
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { startOffset ->
+                            if (canvasWidthPx <= 1f || canvasHeightPx <= 1f) return@detectDragGestures
+                            val q = latestQuad
+                            val tx = (startOffset.x / canvasWidthPx).coerceIn(0f, 1f)
+                            val ty = (startOffset.y / canvasHeightPx).coerceIn(0f, 1f)
 
-                        val currentRect = roiMap[activeZone] ?: NormalizedRoiRect.defaultFor(activeZone)
-                        val touchXNorm = (change.position.x / canvasWidthPx).coerceIn(0f, 1f)
-                        val touchYNorm = (change.position.y / canvasHeightPx).coerceIn(0f, 1f)
-                        val dxNorm = dragAmount.x / canvasWidthPx
-                        val dyNorm = dragAmount.y / canvasHeightPx
+                            val dTL = hypot(tx - q.topLeft.x, ty - q.topLeft.y)
+                            val dTR = hypot(tx - q.topRight.x, ty - q.topRight.y)
+                            val dBR = hypot(tx - q.bottomRight.x, ty - q.bottomRight.y)
+                            val dBL = hypot(tx - q.bottomLeft.x, ty - q.bottomLeft.y)
+                            val minD = minOf(dTL, dTR, dBR, dBL)
 
-                        // If dragging near bottom-right corner -> resize box; otherwise move box
-                        val isNearBottomRight =
-                            kotlin.math.abs(touchXNorm - currentRect.right) < 0.14f &&
-                                kotlin.math.abs(touchYNorm - currentRect.bottom) < 0.14f
+                            activeCorner = if (minD < 0.12f) {
+                                when (minD) {
+                                    dTL -> QuadCornerHandle.TOP_LEFT
+                                    dTR -> QuadCornerHandle.TOP_RIGHT
+                                    dBR -> QuadCornerHandle.BOTTOM_RIGHT
+                                    else -> QuadCornerHandle.BOTTOM_LEFT
+                                }
+                            } else {
+                                QuadCornerHandle.MOVE_ALL
+                            }
+                        },
+                        onDragEnd = { activeCorner = QuadCornerHandle.NONE },
+                        onDragCancel = { activeCorner = QuadCornerHandle.NONE },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            if (canvasWidthPx <= 1f || canvasHeightPx <= 1f) return@detectDragGestures
+                            val q = latestQuad
+                            val dx = dragAmount.x / canvasWidthPx
+                            val dy = dragAmount.y / canvasHeightPx
 
-                        val updated = if (isNearBottomRight) {
-                            currentRect.copy(
-                                right = currentRect.right + dxNorm,
-                                bottom = currentRect.bottom + dyNorm
-                            ).clamp()
-                        } else {
-                            val w = currentRect.width
-                            val h = currentRect.height
-                            val newLeft = (currentRect.left + dxNorm).coerceIn(0.02f, 0.98f - w)
-                            val newTop = (currentRect.top + dyNorm).coerceIn(0.02f, 0.98f - h)
-                            NormalizedRoiRect(
-                                left = newLeft,
-                                top = newTop,
-                                right = newLeft + w,
-                                bottom = newTop + h
-                            ).clamp()
+                            val updated = when (activeCorner) {
+                                QuadCornerHandle.TOP_LEFT -> q.copy(
+                                    topLeft = NormalizedPoint(q.topLeft.x + dx, q.topLeft.y + dy).clamp()
+                                )
+                                QuadCornerHandle.TOP_RIGHT -> q.copy(
+                                    topRight = NormalizedPoint(q.topRight.x + dx, q.topRight.y + dy).clamp()
+                                )
+                                QuadCornerHandle.BOTTOM_RIGHT -> q.copy(
+                                    bottomRight = NormalizedPoint(q.bottomRight.x + dx, q.bottomRight.y + dy).clamp()
+                                )
+                                QuadCornerHandle.BOTTOM_LEFT -> q.copy(
+                                    bottomLeft = NormalizedPoint(q.bottomLeft.x + dx, q.bottomLeft.y + dy).clamp()
+                                )
+                                QuadCornerHandle.MOVE_ALL -> ScreenQuad(
+                                    topLeft = NormalizedPoint(q.topLeft.x + dx, q.topLeft.y + dy).clamp(),
+                                    topRight = NormalizedPoint(q.topRight.x + dx, q.topRight.y + dy).clamp(),
+                                    bottomRight = NormalizedPoint(q.bottomRight.x + dx, q.bottomRight.y + dy).clamp(),
+                                    bottomLeft = NormalizedPoint(q.bottomLeft.x + dx, q.bottomLeft.y + dy).clamp()
+                                )
+                                QuadCornerHandle.NONE -> q
+                            }
+                            onUpdateQuad(updated)
                         }
-                        onUpdateActiveRoi(updated)
-                    }
+                    )
                 }
         ) {
             canvasWidthPx = size.width
             canvasHeightPx = size.height
 
-            // Dim outside areas slightly
-            drawRect(color = Color.Black.copy(alpha = 0.35f))
+            val tl = Offset(screenQuad.topLeft.x * size.width, screenQuad.topLeft.y * size.height)
+            val tr = Offset(screenQuad.topRight.x * size.width, screenQuad.topRight.y * size.height)
+            val br = Offset(screenQuad.bottomRight.x * size.width, screenQuad.bottomRight.y * size.height)
+            val bl = Offset(screenQuad.bottomLeft.x * size.width, screenQuad.bottomLeft.y * size.height)
 
-            RoiZoneType.entries.forEach { zone ->
-                if (!isProUnlocked && zone != RoiZoneType.SUBTITLE) return@forEach
-                val rect = roiMap[zone] ?: NormalizedRoiRect.defaultFor(zone)
-                val isSelected = (zone == activeZone)
+            val quadPath = Path().apply {
+                moveTo(tl.x, tl.y)
+                lineTo(tr.x, tr.y)
+                lineTo(br.x, br.y)
+                lineTo(bl.x, bl.y)
+                close()
+            }
 
-                val leftPx = rect.left * size.width
-                val topPx = rect.top * size.height
-                val widthPx = rect.width * size.width
-                val heightPx = rect.height * size.height
+            val fullPath = Path().apply {
+                addRect(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height))
+            }
+            val outsideMask = Path.combine(PathOperation.Difference, fullPath, quadPath)
+            drawPath(outsideMask, color = Color.Black.copy(alpha = 0.58f))
 
-                // Subtle fill for active ROI
-                drawRect(
-                    color = zone.badgeColor.copy(alpha = if (isSelected) 0.18f else 0.06f),
-                    topLeft = Offset(leftPx, topPx),
-                    size = ComposeSize(widthPx, heightPx)
-                )
+            // Polygon interior fill & stroke
+            drawPath(quadPath, color = Color(0xFF38BDF8).copy(alpha = 0.14f))
+            drawPath(quadPath, color = Color(0xFF38BDF8), style = Stroke(width = 6f))
 
-                // Crisp border
-                drawRect(
-                    color = if (isSelected) zone.badgeColor else zone.badgeColor.copy(alpha = 0.45f),
-                    topLeft = Offset(leftPx, topPx),
-                    size = ComposeSize(widthPx, heightPx),
-                    style = Stroke(width = if (isSelected) 7f else 3f)
-                )
-
-                // Resize handle on bottom-right corner of the active ROI
-                if (isSelected) {
-                    drawCircle(
-                        color = zone.badgeColor,
-                        radius = 18f,
-                        center = Offset(leftPx + widthPx, topPx + heightPx)
-                    )
-                }
+            // Draw 4 Independent Corner Handles (Outer ring + inner dot)
+            listOf(tl, tr, br, bl).forEach { pt ->
+                drawCircle(color = Color.White, radius = 24f, center = pt)
+                drawCircle(color = Color(0xFF0284C7), radius = 15f, center = pt)
             }
         }
 
-        // Top Instruction & Zone Selector Bar
-        Column(
+        // Top Instruction Bar
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
-                .background(Color.Black.copy(alpha = 0.80f))
-                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .background(Color.Black.copy(alpha = 0.76f))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = "Monitördeki Çeviri Alanlarını (ROI) Seçin",
-                color = Color.White,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "Kutuyu taşımak için ortasından, boyutlandırmak için sağ alt köşesinden sürükleyin.",
-                color = Color(0xFFB0BEC5),
-                fontSize = 12.sp
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                RoiZoneType.entries.forEach { zone ->
-                    val selected = (zone == activeZone)
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onSelectZone(zone) },
-                        label = {
-                            Text(
-                                text = zone.titleTr,
-                                fontSize = 12.sp,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = zone.badgeColor.copy(alpha = 0.25f),
-                            selectedLabelColor = zone.badgeColor,
-                            labelColor = Color.White
-                        )
-                    )
-                }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "1. Kameradan Ekran Seçimi (4 Bağımsız Köşe)",
+                    color = Color(0xFF38BDF8),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Text(
+                    text = "4 köşenin her birini bağımsız sürükleyerek monitörün/TV'nin tam 4 köşesine oturtun. Blur modu tüm bu çerçeveyi kullanır.",
+                    color = Color(0xFFCFD8DC),
+                    fontSize = 12.sp
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            OutlinedButton(onClick = { onUpdateQuad(ScreenQuad()) }) {
+                Text("Sıfırla", color = Color.White, fontSize = 12.sp)
             }
         }
 
-        // Bottom Confirmation Bar -> Switches to Previewless OLED Fullscreen HUD
-        Column(
+        // Bottom Confirmation Bar
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .background(Color.Black.copy(alpha = 0.85f))
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .background(Color.Black.copy(alpha = 0.82f))
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Button(
-                onClick = onFinishCalibration,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
+                onClick = onSaveAndBackToHub,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF00E676),
@@ -350,7 +369,7 @@ fun RoiCalibrationScreen(
                 )
             ) {
                 Text(
-                    text = "Alanları Kaydet & Kamera Görüntüsünü Kapat (Tam Ekran OLED Modu)",
+                    text = "Ekran Köşelerini Kaydet & Alt Alanları Seçmeye Geç ✓",
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 14.sp
                 )
@@ -359,3 +378,273 @@ fun RoiCalibrationScreen(
     }
 }
 
+/**
+ * STAGE 2: Sub-Zone Selection INSIDE the Proportional / Perspective-Rectified Monitor Screen!
+ *
+ * After the user selects the 4 corners of the monitor (`ScreenQuad`), the camera feed is
+ * perspective-warped (`RoiImageProcessor.warpScreenQuadToFlatBitmap`) so the monitor fills the
+ * calibration view proportionally. The user then adjusts the Subtitle, Quest, or Dialogue box
+ * (from all 4 corners and 4 edges) directly on this flattened screen!
+ */
+@Composable
+fun SingleZoneCameraCalibrationScreen(
+    zone: RoiZoneType,
+    screenQuad: ScreenQuad,
+    rect: NormalizedRoiRect,
+    onUpdateRect: (NormalizedRoiRect) -> Unit,
+    onBackToSetupHub: () -> Unit,
+    onStartGameNow: () -> Unit
+) {
+    var rectifiedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    // Capture live camera frames and perspective-warp the 4-corner ScreenQuad into a proportional flat image
+    CameraXControllerEffect(
+        showPreview = false,
+        enableFrameAnalysis = true,
+        previewView = null,
+        onFrameBitmap = { rawFrame ->
+            val warped = RoiImageProcessor.warpScreenQuadToFlatBitmap(rawFrame, screenQuad, 960, 540)
+            rawFrame.recycle()
+            val prev = rectifiedBitmap
+            rectifiedBitmap = warped
+            prev?.recycle()
+        }
+    )
+
+    val latestRect by rememberUpdatedState(rect)
+    var canvasWidthPx by remember { mutableStateOf(1f) }
+    var canvasHeightPx by remember { mutableStateOf(1f) }
+    var activeDragHandle by remember { mutableStateOf(DragHandleMode.NONE) }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B1120))) {
+        // Proportional Flattened Monitor Screen Feed
+        val currentBmp = rectifiedBitmap
+        if (currentBmp != null && !currentBmp.isRecycled) {
+            Image(
+                bitmap = currentBmp.asImageBitmap(),
+                contentDescription = "Orantılı Düzleştirilmiş Monitör Ekranı",
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Seçilen 4 köşe çerçevesi ekrana orantılı şekilde yerleştiriliyor...",
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontSize = 13.sp
+                )
+            }
+        }
+
+        // 8-Way Interactive Frame Canvas over the Proportional Rectified Screen
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(zone) {
+                    detectDragGestures(
+                        onDragStart = { startOffset ->
+                            if (canvasWidthPx <= 1f || canvasHeightPx <= 1f) return@detectDragGestures
+                            val r = latestRect
+                            val tx = (startOffset.x / canvasWidthPx).coerceIn(0f, 1f)
+                            val ty = (startOffset.y / canvasHeightPx).coerceIn(0f, 1f)
+                            val hitTol = 0.065f
+
+                            val nearLeft = abs(tx - r.left) < hitTol
+                            val nearRight = abs(tx - r.right) < hitTol
+                            val nearTop = abs(ty - r.top) < hitTol
+                            val nearBottom = abs(ty - r.bottom) < hitTol
+                            val withinX = tx in (r.left - hitTol)..(r.right + hitTol)
+                            val withinY = ty in (r.top - hitTol)..(r.bottom + hitTol)
+
+                            activeDragHandle = when {
+                                nearLeft && nearTop -> DragHandleMode.CORNER_TOP_LEFT
+                                nearRight && nearTop -> DragHandleMode.CORNER_TOP_RIGHT
+                                nearLeft && nearBottom -> DragHandleMode.CORNER_BOTTOM_LEFT
+                                nearRight && nearBottom -> DragHandleMode.CORNER_BOTTOM_RIGHT
+                                nearTop && withinX -> DragHandleMode.EDGE_TOP
+                                nearBottom && withinX -> DragHandleMode.EDGE_BOTTOM
+                                nearLeft && withinY -> DragHandleMode.EDGE_LEFT
+                                nearRight && withinY -> DragHandleMode.EDGE_RIGHT
+                                else -> DragHandleMode.MOVE_CENTER
+                            }
+                        },
+                        onDragEnd = { activeDragHandle = DragHandleMode.NONE },
+                        onDragCancel = { activeDragHandle = DragHandleMode.NONE },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            if (canvasWidthPx <= 1f || canvasHeightPx <= 1f) return@detectDragGestures
+                            val r = latestRect
+                            val dx = dragAmount.x / canvasWidthPx
+                            val dy = dragAmount.y / canvasHeightPx
+
+                            val updated = when (activeDragHandle) {
+                                DragHandleMode.CORNER_TOP_LEFT -> r.copy(
+                                    left = (r.left + dx).coerceAtMost(r.right - 0.08f),
+                                    top = (r.top + dy).coerceAtMost(r.bottom - 0.06f)
+                                )
+                                DragHandleMode.CORNER_TOP_RIGHT -> r.copy(
+                                    right = (r.right + dx).coerceAtLeast(r.left + 0.08f),
+                                    top = (r.top + dy).coerceAtMost(r.bottom - 0.06f)
+                                )
+                                DragHandleMode.CORNER_BOTTOM_LEFT -> r.copy(
+                                    left = (r.left + dx).coerceAtMost(r.right - 0.08f),
+                                    bottom = (r.bottom + dy).coerceAtLeast(r.top + 0.06f)
+                                )
+                                DragHandleMode.CORNER_BOTTOM_RIGHT -> r.copy(
+                                    right = (r.right + dx).coerceAtLeast(r.left + 0.08f),
+                                    bottom = (r.bottom + dy).coerceAtLeast(r.top + 0.06f)
+                                )
+                                DragHandleMode.EDGE_TOP -> r.copy(
+                                    top = (r.top + dy).coerceAtMost(r.bottom - 0.06f)
+                                )
+                                DragHandleMode.EDGE_BOTTOM -> r.copy(
+                                    bottom = (r.bottom + dy).coerceAtLeast(r.top + 0.06f)
+                                )
+                                DragHandleMode.EDGE_LEFT -> r.copy(
+                                    left = (r.left + dx).coerceAtMost(r.right - 0.08f)
+                                )
+                                DragHandleMode.EDGE_RIGHT -> r.copy(
+                                    right = (r.right + dx).coerceAtLeast(r.left + 0.08f)
+                                )
+                                else -> {
+                                    val w = r.width
+                                    val h = r.height
+                                    val nl = (r.left + dx).coerceIn(0.01f, 0.99f - w)
+                                    val nt = (r.top + dy).coerceIn(0.01f, 0.99f - h)
+                                    NormalizedRoiRect(nl, nt, nl + w, nt + h)
+                                }
+                            }.clamp()
+
+                            onUpdateRect(updated)
+                        }
+                    )
+                }
+        ) {
+            canvasWidthPx = size.width
+            canvasHeightPx = size.height
+
+            val leftPx = rect.left * size.width
+            val topPx = rect.top * size.height
+            val rightPx = rect.right * size.width
+            val bottomPx = rect.bottom * size.height
+            val widthPx = rightPx - leftPx
+            val heightPx = bottomPx - topPx
+            val midX = leftPx + widthPx / 2f
+            val midY = topPx + heightPx / 2f
+
+            val outerPath = Path().apply {
+                addRect(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height))
+            }
+            val innerPath = Path().apply {
+                addRect(androidx.compose.ui.geometry.Rect(leftPx, topPx, rightPx, bottomPx))
+            }
+            val maskPath = Path.combine(PathOperation.Difference, outerPath, innerPath)
+            drawPath(path = maskPath, color = Color.Black.copy(alpha = 0.50f))
+
+            drawRect(
+                color = zone.badgeColor.copy(alpha = 0.14f),
+                topLeft = Offset(leftPx, topPx),
+                size = ComposeSize(widthPx, heightPx)
+            )
+
+            drawRect(
+                color = zone.badgeColor,
+                topLeft = Offset(leftPx, topPx),
+                size = ComposeSize(widthPx, heightPx),
+                style = Stroke(width = 6f)
+            )
+
+            val cornerRadius = 18f
+            drawCircle(zone.badgeColor, cornerRadius, Offset(leftPx, topPx))
+            drawCircle(zone.badgeColor, cornerRadius, Offset(rightPx, topPx))
+            drawCircle(zone.badgeColor, cornerRadius, Offset(leftPx, bottomPx))
+            drawCircle(zone.badgeColor, cornerRadius, Offset(rightPx, bottomPx))
+
+            val barLength = 44f
+            val barThickness = 12f
+            drawRect(
+                color = Color.White,
+                topLeft = Offset(midX - barLength / 2f, topPx - barThickness / 2f),
+                size = ComposeSize(barLength, barThickness)
+            )
+            drawRect(
+                color = Color.White,
+                topLeft = Offset(midX - barLength / 2f, bottomPx - barThickness / 2f),
+                size = ComposeSize(barLength, barThickness)
+            )
+            drawRect(
+                color = Color.White,
+                topLeft = Offset(leftPx - barThickness / 2f, midY - barLength / 2f),
+                size = ComposeSize(barThickness, barLength)
+            )
+            drawRect(
+                color = Color.White,
+                topLeft = Offset(rightPx - barThickness / 2f, midY - barLength / 2f),
+                size = ComposeSize(barThickness, barLength)
+            )
+        }
+
+        // Top Bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .background(Color.Black.copy(alpha = 0.74f))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "${zone.titleTr} (Seçilen Ekran Üzerinde Orantılı)",
+                    color = zone.badgeColor,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Text(
+                    text = "4 bağımsız köşeyle seçtiğiniz monitör ekrana tam oturtuldu. Şimdi bu ekran içinde alanı köşe ve yanlarından ayarlayın.",
+                    color = Color(0xFFCFD8DC),
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            OutlinedButton(
+                onClick = { onUpdateRect(NormalizedRoiRect.defaultFor(zone)) }
+            ) {
+                Text("Sıfırla", color = Color.White, fontSize = 12.sp)
+            }
+        }
+
+        // Bottom Bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .background(Color.Black.copy(alpha = 0.78f))
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = onBackToSetupHub,
+                modifier = Modifier.weight(1f).height(48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("← Ekran Ayarı Menüsüne Dön", color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+            Button(
+                onClick = onStartGameNow,
+                modifier = Modifier.weight(1f).height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = zone.badgeColor,
+                    contentColor = Color.Black
+                )
+            ) {
+                Text("Kaydet & Oyuna Başla ▶", fontWeight = FontWeight.ExtraBold)
+            }
+        }
+    }
+}
