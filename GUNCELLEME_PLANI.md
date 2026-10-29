@@ -79,3 +79,20 @@ Monitörün 4 köşesi seçilip ekrana orantılı şekilde yerleştirildikten so
 * **📌 Kayıtlı Ekranlar (Sabit Tripod / Monitör Profilleri):**
   * **Ekran Ayarı** menüsünün en üstünde **Kayıtlı Ekranlar** kartı yer alır.
   * `+ Mevcut Ayarı Kaydet` butonuyla sabit tripod konumunuzu (ör. *"Masaüstü 27 inç Tripod"*, *"Salon TV Koltuk"*) kaydedebilir ve daha sonra tripodu aynı yere koyduğunuzda **tek dokunuşla** tüm kamera/çerçeve ayarlarını anında yükleyebilirsiniz.
+
+---
+
+## 7. Tüm Ekran Seçeneklerinde Kesintisiz Anlık Çeviri (v1.5)
+Artık anlık çeviri yalnızca `Ana Altyazı` ile sınırlı değildir; **4 ekran seçeneğinin tamamında (`Ana Altyazı`, `Görev Alanı`, `Kullanıcı Seçimi` ve `Blur Modu`)** kesintisiz, anlık ve dinamik çalışır:
+
+1. **Görev Alanı (Quest) — Anlık Canlı Çeviri:**
+   * Önceden tek çekim yapıp uykuya geçen (`single-shot sleep`) mantık kaldırılarak yerine **280 ms aralıklarla kesintisiz canlı takip** getirildi.
+   * Görev penceresinde yeni bir görev eklendiğinde, hedef güncellendiğinde (`(0/1)` $\rightarrow$ `(1/1)`) veya görev tamamlandığında anında ekranda Türkçe çevirisi yenilenir.
+2. **Kullanıcı Seçimi (Özel Alan) — Anlık Canlı Çeviri:**
+   * Diyalog seçenekleri, envanter kutuları ve eşya açıklamaları için seçilen çerçevede sürekli gerçek zamanlı OCR ve çeviri çalışır.
+   * `RoiImageProcessor` içinde ara tonları ve renkli arayüz yazılarını koruyan yumuşak S-Curve adaptif kontrast filtresi kullanılarak diyalog menülerindeki yeşil/gri buton yazılarının kaybolması önlendi.
+3. **Blur Modu (Tüm Ekran) — Donmasız Canlı Monitör & Lokal Çeviri:**
+   * Kamera yüzeyi kopmalarını (`PreviewView detachment`) engellemek amacıyla tüm arka plan doğrudan perspektif düzeltmeli `ImageBitmap` üzerinden canlı aktarılır.
+   * Monitör üzerindeki tüm metin blokları (`boundingBox`) anlık tespit edilip her biri kendi yerinde ve boyutunda blurlanarak saniyede ~3 kez gerçek zamanlı çevrilir.
+4. **Alanlar Arası Geçişte Anında Yenileme:**
+   * Alt bardaki 4 alan arasında geçiş yapıldığında veya ses tuşlarıyla alan değiştirildiğinde önceki alandan kalan eski metin beklemeden silinir; seçilen alanın son çevirisi anında gösterilir ve sıfır gecikmeyle canlı tarama tetiklenir.

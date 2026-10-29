@@ -621,21 +621,14 @@ fun GameTrackingHudScreen(
     onBackToMainMenu: () -> Unit,
     onFrameBitmap: (Bitmap) -> Unit
 ) {
-    val context = LocalContext.current
     val isLiveBlurMode = state.activeZone.isLiveArBlurMode
     val theme = state.hudTheme
 
-    val livePreviewView = remember {
-        PreviewView(context).apply {
-            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-        }
-    }
-
-    // When Zone 4 (LIVE_AR_BLUR) is active, camera preview stays visible; otherwise Previewless CameraX runs!
+    // Previewless CameraX runs continuously for all zones (including Blur Mode) with zero UI freezes!
     CameraXControllerEffect(
-        showPreview = isLiveBlurMode,
+        showPreview = false,
         enableFrameAnalysis = true,
-        previewView = if (isLiveBlurMode) livePreviewView else null,
+        previewView = null,
         cameraZoomRatio = state.cameraZoomRatio,
         exposureCompensation = state.exposureCompensation,
         focusCenterNormX = state.screenQuad.centerX(),
@@ -657,11 +650,8 @@ fun GameTrackingHudScreen(
                 .alpha(contentAlpha)
         ) {
             if (isLiveBlurMode) {
-                // 4TH OPTION: Live Camera Feed + Blurred Frosted Glass Overlay at Exact ROI Coordinates
-                LiveArBlurTranslationOverlay(
-                    state = state,
-                    previewView = livePreviewView
-                )
+                // 4TH OPTION: Live Flattened Monitor Feed + Blurred Frosted Glass Overlay at Exact ROI Coordinates
+                LiveArBlurTranslationOverlay(state = state)
             } else {
                 // Standard Text-Focused Fullscreen Reader (90%+ area dedicated to subtitle text)
                 Box(
@@ -727,26 +717,26 @@ fun GameTrackingHudScreen(
                             )
                         }
 
-                        if (state.activeZone == RoiZoneType.QUEST && state.isQuestSingleShotSleeping) {
-                            Spacer(modifier = Modifier.height(12.dp))
+                        if (state.activeZone == RoiZoneType.QUEST) {
+                            Spacer(modifier = Modifier.height(10.dp))
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(50))
-                                    .background(theme.cardSurfaceColor.copy(alpha = 0.7f))
-                                    .border(1.dp, theme.accentColor.copy(alpha = 0.5f), RoundedCornerShape(50))
+                                    .background(theme.cardSurfaceColor.copy(alpha = 0.55f))
+                                    .border(1.dp, theme.accentColor.copy(alpha = 0.4f), RoundedCornerShape(50))
                                     .clickable { onTriggerQuestRescan() }
-                                    .padding(horizontal = 14.dp, vertical = 5.dp)
+                                    .padding(horizontal = 12.dp, vertical = 4.dp)
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
                                         imageVector = Icons.Default.Refresh,
                                         contentDescription = null,
                                         tint = theme.accentColor,
-                                        modifier = Modifier.size(14.dp)
+                                        modifier = Modifier.size(13.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(5.dp))
                                     Text(
-                                        text = "Görev Okundu • Yeniden Tara",
+                                        text = "Görev Alanı • Anlık Canlı Çeviri Aktif",
                                         color = theme.accentColor,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
@@ -944,7 +934,7 @@ fun GameTrackingHudScreen(
 /**
  * 4TH SCREEN OPTION: LOCALIZED MULTI-REGION BLUR OVERLAY (Google Lens / In-Place AR Style!)
  *
- * - Displays the selected monitor screen (`state.rectifiedScreenPreview` or live camera).
+ * - Displays the selected monitor screen (`state.rectifiedScreenImage` or live warped frame).
  * - Does NOT blur the entire screen!
  * - Instead, for EVERY text block detected across the screen (`state.localizedBlurBlocks` — whether at the top-right quest log,
  *   center-left hint box, or bottom subtitle), it blurs ONLY the exact bounding box (`bounds`) of that text
@@ -952,28 +942,57 @@ fun GameTrackingHudScreen(
  */
 @Composable
 private fun LiveArBlurTranslationOverlay(
-    state: MainUiState,
-    previewView: PreviewView
+    state: MainUiState
 ) {
     val theme = state.hudTheme
-    val rectifiedBmp = state.rectifiedScreenPreview
+    val rectifiedImg = state.rectifiedScreenImage ?: state.rectifiedScreenPreview?.asImageBitmap()
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         val screenW = maxWidth
         val screenH = maxHeight
 
-        // Base Layer: Proportional Rectified Monitor Screen (or Live Camera Preview fallback)
-        if (rectifiedBmp != null && !rectifiedBmp.isRecycled) {
+        // Base Layer: Proportional Rectified Monitor Screen
+        if (rectifiedImg != null) {
             Image(
-                bitmap = rectifiedBmp.asImageBitmap(),
+                bitmap = rectifiedImg,
                 contentDescription = "Seçili Monitör Ekranı",
                 contentScale = ContentScale.FillBounds,
                 modifier = Modifier.fillMaxSize()
             )
         } else {
-            AndroidView(
-                factory = { previewView },
-                modifier = Modifier.fillMaxSize()
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF090D16)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Monitör taranıyor ve düzleştiriliyor...",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 13.sp
+                )
+            }
+        }
+
+        // Top Status Badge in Blur Mode
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 40.dp)
+                .clip(RoundedCornerShape(50))
+                .background(Color.Black.copy(alpha = 0.60f))
+                .border(1.dp, Color(0xFFE040FB).copy(alpha = 0.50f), RoundedCornerShape(50))
+                .padding(horizontal = 14.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = if (state.localizedBlurBlocks.isEmpty()) {
+                    "✨ Canlı Blur Modu • Ekrandaki yazılar anlık taranıyor..."
+                } else {
+                    "✨ Canlı Blur Modu • ${state.localizedBlurBlocks.size} metin bloğu anlık çevriliyor"
+                },
+                color = Color(0xFFF06292),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
             )
         }
 

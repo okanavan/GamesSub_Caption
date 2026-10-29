@@ -2,6 +2,8 @@ package com.gamessub.caption.ui
 
 import android.app.Application
 import android.graphics.Bitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.gamessub.caption.billing.ProAccessManager
@@ -70,14 +72,22 @@ data class MainUiState(
 
     val rawDetectedText: String = "",
     val translatedText: String = "Altyazı bekleniyor... (Test için üst şeffaf bardaki ▶ Test butonuna dokunabilirsiniz)",
+    val zoneTranslatedMap: Map<RoiZoneType, String> = mapOf(
+        RoiZoneType.SUBTITLE to "Altyazı taranıyor...",
+        RoiZoneType.QUEST to "Görev alanı taranıyor...",
+        RoiZoneType.DIALOGUE to "Kullanıcı alanı taranıyor...",
+        RoiZoneType.LIVE_AR_BLUR to "Tüm ekran blur çevirisi taranıyor..."
+    ),
+    val zoneRawMap: Map<RoiZoneType, String> = emptyMap(),
     val activeSpeakerName: String? = null,
     val detectedSubtitleColor: DominantSubtitleColor = DominantSubtitleColor.WHITE,
     val activeTtsProfileStatus: String = "Hazır",
     val assignedCharacterVoices: Map<String, String> = emptyMap(),
     val localizedBlurBlocks: List<LocalizedTranslatedBlock> = emptyList(),
     val rectifiedScreenPreview: Bitmap? = null,
+    val rectifiedScreenImage: ImageBitmap? = null,
 
-    val currentScanIntervalMs: Long = 380L,
+    val currentScanIntervalMs: Long = 280L,
     val isIdlePowerSave: Boolean = false,
     val isQuestSingleShotSleeping: Boolean = false,
     val isScreenDimmed: Boolean = false,
@@ -291,13 +301,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
+        lastStableOcrByZone.remove(zone)
+        lastFrameProcessedAtMs = 0L // Force immediate real-time scan on the very next camera frame!
+        val cachedTr = state.zoneTranslatedMap[zone] ?: "${zone.shortTitleTr} anlık taranıyor..."
+        val cachedRaw = state.zoneRawMap[zone].orEmpty()
         _uiState.update {
             it.copy(
                 activeZone = zone,
+                translatedText = cachedTr,
+                rawDetectedText = cachedRaw,
                 isQuestSingleShotSleeping = false,
                 isIdlePowerSave = false,
                 isScreenDimmed = false,
-                currentScanIntervalMs = 380L
+                currentScanIntervalMs = 280L
             )
         }
     }
@@ -379,11 +395,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        if (state.activeZone == RoiZoneType.QUEST && state.isQuestSingleShotSleeping) {
-            fullFrameBitmap.recycle()
-            return
-        }
-
         val now = System.currentTimeMillis()
         val elapsedSinceLastScan = now - lastFrameProcessedAtMs
         if (elapsedSinceLastScan < state.currentScanIntervalMs) {
@@ -403,16 +414,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.Default) {
             try {
                 if (activeZone.isLiveArBlurMode) {
-                    // BLUR MODE: Warp the selected 4-corner monitor screen (`ScreenQuad`), detect ALL
-                    // localized text blocks (`boundingBox` + `lineHeightRatio`), blur ONLY each text block's
+                    // BLUR MODE: Warp the selected 4-corner monitor screen (`ScreenQuad`) to 1280x720 for fast continuous OCR (<70ms),
+                    // detect ALL localized text blocks (`boundingBox` + `lineHeightRatio`), blur ONLY each text block's
                     // position, and render the translation in-place at the original text's size!
                     val rectifiedScreen = RoiImageProcessor.warpScreenQuadToFlatBitmap(
                         fullFrame = fullFrameBitmap,
                         screenQuad = quad,
-                        targetWidth = 1920,
-                        targetHeight = 1080
+                        targetWidth = 1280,
+                        targetHeight = 720
                     )
                     fullFrameBitmap.recycle()
+
+                    val rectifiedImageBitmap = rectifiedScreen.asImageBitmap()
 
                     val detectedBlocks = ocrEngine.recognizeLocalizedBlocks(
                         bitmap = rectifiedScreen,
@@ -433,7 +446,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 deepLApiKey = state.deepLApiKey,
                                 geminiApiKey = state.geminiApiKey
                             ).getOrDefault(blk.text)
-                            if (blurTranslationCache.size > 60) blurTranslationCache.clear()
+                            if (blurTranslationCache.size > 80) blurTranslationCache.clear()
                             blurTranslationCache[normKey] = res
                             res
                         }
@@ -447,11 +460,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
 
-                    // Also speak the bottom-most (subtitle) block via TTS if changed
+                    // Also speak the primary bottom subtitle block via TTS if changed
                     val primarySubtitleBlock = translatedBlocks.maxByOrNull { it.bounds.bottom }
                     if (primarySubtitleBlock != null) {
                         val prevRaw = lastStableOcrByZone[RoiZoneType.LIVE_AR_BLUR].orEmpty()
-                        if (!TextStabilityFilter.isDuplicateOrFlicker(prevRaw, primarySubtitleBlock.rawText, 0.85f)) {
+                        if (!TextStabilityFilter.isDuplicateOrFlicker(prevRaw, primarySubtitleBlock.rawText, 0.90f)) {
                             lastStableOcrByZone[RoiZoneType.LIVE_AR_BLUR] = primarySubtitleBlock.rawText
                             val parsed = SpeakerParser.parse(primarySubtitleBlock.rawText, DominantSubtitleColor.WHITE)
                                 .copy(cleanSpokenText = primarySubtitleBlock.translatedText)
@@ -466,11 +479,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
+                    val updatedTrMap = state.zoneTranslatedMap.toMutableMap()
+                    if (primarySubtitleBlock != null) {
+                        updatedTrMap[RoiZoneType.LIVE_AR_BLUR] = primarySubtitleBlock.translatedText
+                    }
+
                     _uiState.update { prev ->
                         prev.copy(
                             rectifiedScreenPreview = rectifiedScreen,
+                            rectifiedScreenImage = rectifiedImageBitmap,
                             localizedBlurBlocks = translatedBlocks,
-                            lastTextDetectedTimestampMs = if (translatedBlocks.isNotEmpty()) now else prev.lastTextDetectedTimestampMs
+                            zoneTranslatedMap = updatedTrMap,
+                            translatedText = primarySubtitleBlock?.translatedText ?: prev.translatedText,
+                            lastTextDetectedTimestampMs = if (translatedBlocks.isNotEmpty()) now else prev.lastTextDetectedTimestampMs,
+                            currentScanIntervalMs = 280L
                         )
                     }
                 } else {
@@ -517,7 +539,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update {
                 it.copy(
                     isIdlePowerSave = shouldIdle,
-                    currentScanIntervalMs = if (shouldIdle) 1000L else 380L,
+                    currentScanIntervalMs = if (shouldIdle) 1000L else 280L,
                     isScreenDimmed = shouldDim
                 )
             }
@@ -525,13 +547,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val previousForZone = lastStableOcrByZone[zone].orEmpty()
-        if (TextStabilityFilter.isDuplicateOrFlicker(previousForZone, cleaned, threshold = 0.85f)) {
+        // Check duplicate with 0.92f threshold so small changes in quest counters or dialogue options re-translate
+        if (previousForZone.isNotEmpty() && TextStabilityFilter.isDuplicateOrFlicker(previousForZone, cleaned, threshold = 0.92f)) {
             _uiState.update {
                 it.copy(
                     lastTextDetectedTimestampMs = nowMs,
                     isIdlePowerSave = false,
                     isScreenDimmed = false,
-                    currentScanIntervalMs = 380L
+                    currentScanIntervalMs = 280L
                 )
             }
             return
@@ -562,20 +585,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         syncCharacterVoiceMap()
 
-        val enterQuestSleep = (zone == RoiZoneType.QUEST && zone.isSingleShotDefault)
+        val updatedTrMap = state.zoneTranslatedMap.toMutableMap()
+        updatedTrMap[zone] = translatedBody
+        val updatedRawMap = state.zoneRawMap.toMutableMap()
+        updatedRawMap[zone] = cleaned
 
         _uiState.update {
             it.copy(
                 rawDetectedText = cleaned,
                 translatedText = translatedBody,
+                zoneTranslatedMap = updatedTrMap,
+                zoneRawMap = updatedRawMap,
                 activeSpeakerName = sourceParsed.speakerName,
                 detectedSubtitleColor = dominantColor,
                 activeTtsProfileStatus = ttsStatus,
                 lastTextDetectedTimestampMs = nowMs,
                 isIdlePowerSave = false,
                 isScreenDimmed = false,
-                currentScanIntervalMs = 380L,
-                isQuestSingleShotSleeping = enterQuestSleep
+                currentScanIntervalMs = 280L,
+                isQuestSingleShotSleeping = false
             )
         }
     }
@@ -652,16 +680,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         )
 
+        val updatedTrMap = state.zoneTranslatedMap.toMutableMap()
+        updatedTrMap[state.activeZone] = chosen.second
+        val updatedRawMap = state.zoneRawMap.toMutableMap()
+        updatedRawMap[state.activeZone] = chosen.first
+
         _uiState.update {
             it.copy(
                 rawDetectedText = chosen.first,
                 translatedText = chosen.second,
+                zoneTranslatedMap = updatedTrMap,
+                zoneRawMap = updatedRawMap,
                 activeSpeakerName = parsed.speakerName,
                 detectedSubtitleColor = chosen.third,
                 activeTtsProfileStatus = ttsStatus,
                 localizedBlurBlocks = sampleBlurBlocks,
                 isScreenDimmed = false,
-                isQuestSingleShotSleeping = (state.activeZone == RoiZoneType.QUEST)
+                isQuestSingleShotSleeping = false
             )
         }
     }

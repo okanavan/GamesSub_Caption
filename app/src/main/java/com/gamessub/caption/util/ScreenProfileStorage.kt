@@ -198,3 +198,4 @@ class ScreenProfileStorage(context: Context) {
         private const val KEY_SAVED_PROFILES = "saved_tripod_profiles_json_array"
     }
 }
+

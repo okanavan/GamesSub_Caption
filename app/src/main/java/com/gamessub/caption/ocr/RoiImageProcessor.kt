@@ -199,7 +199,9 @@ object RoiImageProcessor {
     }
 
     /**
-     * Enhances subtitle glyph readability by applying local edge sharpening + contrast stretching.
+     * Enhances glyph readability across all zone types (Subtitle, Quest, Dialogue) by applying
+     * 4-neighbor Laplacian unsharp mask + adaptive contrast stretching that preserves mid-tone
+     * and colored UI text without crushing darker quest/dialogue letters.
      */
     private fun applySubtitleContrastAndSharpenFilter(source: Bitmap): Bitmap {
         val w = source.width
@@ -222,10 +224,16 @@ object RoiImageProcessor {
                 val neighbors = lumArr[idx - 1] + lumArr[idx + 1] + lumArr[idx - w] + lumArr[idx + w]
                 val sharpened = (center * 5 - neighbors).coerceIn(0, 255)
 
+                // Smooth adaptive contrast curve: preserves dark/medium quest logs while making letters pop
                 val boosted = when {
-                    sharpened >= 160 -> min(255, sharpened + 48)
-                    sharpened <= 92 -> max(0, sharpened - 55)
-                    else -> (sharpened - 92) * 2
+                    sharpened >= 180 -> min(255, sharpened + 35)
+                    sharpened in 80..179 -> {
+                        // Smooth S-curve transition so grey/cyan quest text and green dialogue options are never crushed
+                        val norm = (sharpened - 80) / 100f
+                        val stretched = 80 + (norm * norm * (3 - 2 * norm) * 100f).toInt()
+                        stretched.coerceIn(0, 255)
+                    }
+                    else -> max(0, (sharpened * 0.75f).toInt())
                 }.coerceIn(0, 255)
 
                 pixels[idx] = Color.rgb(boosted, boosted, boosted)
