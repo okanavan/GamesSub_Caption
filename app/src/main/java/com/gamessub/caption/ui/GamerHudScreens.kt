@@ -621,6 +621,7 @@ fun GameTrackingHudScreen(
     onBackToMainMenu: () -> Unit,
     onFrameBitmap: (Bitmap) -> Unit
 ) {
+    val context = LocalContext.current
     val isLiveBlurMode = state.activeZone.isLiveArBlurMode
     val theme = state.hudTheme
 

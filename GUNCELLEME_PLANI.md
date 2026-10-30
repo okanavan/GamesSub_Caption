@@ -91,8 +91,9 @@ Artık anlık çeviri yalnızca `Ana Altyazı` ile sınırlı değildir; **4 ekr
 2. **Kullanıcı Seçimi (Özel Alan) — Anlık Canlı Çeviri:**
    * Diyalog seçenekleri, envanter kutuları ve eşya açıklamaları için seçilen çerçevede sürekli gerçek zamanlı OCR ve çeviri çalışır.
    * `RoiImageProcessor` içinde ara tonları ve renkli arayüz yazılarını koruyan yumuşak S-Curve adaptif kontrast filtresi kullanılarak diyalog menülerindeki yeşil/gri buton yazılarının kaybolması önlendi.
-3. **Blur Modu (Tüm Ekran) — Donmasız Canlı Monitör & Lokal Çeviri:**
+3. **Blur Modu (Tüm Ekran) — 1080p Full HD Donmasız Canlı Monitör & Lokal Çeviri:**
    * Kamera yüzeyi kopmalarını (`PreviewView detachment`) engellemek amacıyla tüm arka plan doğrudan perspektif düzeltmeli `ImageBitmap` üzerinden canlı aktarılır.
+   * Blur Modu da diğer 3 alan gibi **1920x1080 Full HD** çözünürlükle düzleştirilir (~4 kat daha yüksek piksel detayıyla en küçük monitör yazılarını dahi net okur).
    * Monitör üzerindeki tüm metin blokları (`boundingBox`) anlık tespit edilip her biri kendi yerinde ve boyutunda blurlanarak saniyede ~3 kez gerçek zamanlı çevrilir.
 4. **Alanlar Arası Geçişte Anında Yenileme:**
    * Alt bardaki 4 alan arasında geçiş yapıldığında veya ses tuşlarıyla alan değiştirildiğinde önceki alandan kalan eski metin beklemeden silinir; seçilen alanın son çevirisi anında gösterilir ve sıfır gecikmeyle canlı tarama tetiklenir.

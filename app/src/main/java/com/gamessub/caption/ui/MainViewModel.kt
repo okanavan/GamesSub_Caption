@@ -414,14 +414,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.Default) {
             try {
                 if (activeZone.isLiveArBlurMode) {
-                    // BLUR MODE: Warp the selected 4-corner monitor screen (`ScreenQuad`) to 1280x720 for fast continuous OCR (<70ms),
+                    // BLUR MODE: Warp the selected 4-corner monitor screen (`ScreenQuad`) to Full HD 1920x1080 for maximum pixel clarity,
                     // detect ALL localized text blocks (`boundingBox` + `lineHeightRatio`), blur ONLY each text block's
                     // position, and render the translation in-place at the original text's size!
                     val rectifiedScreen = RoiImageProcessor.warpScreenQuadToFlatBitmap(
                         fullFrame = fullFrameBitmap,
                         screenQuad = quad,
-                        targetWidth = 1280,
-                        targetHeight = 720
+                        targetWidth = 1920,
+                        targetHeight = 1080
                     )
                     fullFrameBitmap.recycle()
 
